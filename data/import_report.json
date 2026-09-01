@@ -1,0 +1,94 @@
+{
+  "total_parsed": 9488,
+  "sources": {
+    "最新版【单选题+判断题】.pdf": {
+      "parsed": 5490,
+      "number_min": 1,
+      "number_max": 5500,
+      "missing_number_labels": [
+        344,
+        345,
+        346,
+        347,
+        5181,
+        5182,
+        5183,
+        5184,
+        5185,
+        5186
+      ],
+      "type_counts": {
+        "single": 3996,
+        "judgment": 1494
+      },
+      "warning_counts": {}
+    },
+    "最新版【多选题】.pdf": {
+      "parsed": 3998,
+      "number_min": 1,
+      "number_max": 4000,
+      "missing_number_labels": [
+        3157,
+        3206
+      ],
+      "type_counts": {
+        "multiple": 3998
+      },
+      "warning_counts": {
+        "missing_explanation": 2,
+        "option_count_not_4": 3,
+        "answer_refers_to_missing_option": 1,
+        "duplicate_option_key": 2,
+        "missing_answer": 1
+      }
+    }
+  },
+  "quality_issues": [
+    {
+      "source_file": "最新版【多选题】.pdf",
+      "source_question_no": 2739,
+      "type": "multiple",
+      "warnings": [
+        "option_count_not_4",
+        "answer_refers_to_missing_option"
+      ],
+      "stem": "咨询师自我开放技术的使用原则正确的是()"
+    },
+    {
+      "source_file": "最新版【多选题】.pdf",
+      "source_question_no": 2896,
+      "type": "multiple",
+      "warnings": [
+        "option_count_not_4",
+        "duplicate_option_key"
+      ],
+      "stem": "注意的品质包含()"
+    },
+    {
+      "source_file": "最新版【多选题】.pdf",
+      "source_question_no": 3156,
+      "type": "multiple",
+      "warnings": [
+        "missing_answer"
+      ],
+      "stem": "印象管理的常用策略有()"
+    },
+    {
+      "source_file": "最新版【多选题】.pdf",
+      "source_question_no": 3210,
+      "type": "multiple",
+      "warnings": [
+        "option_count_not_4",
+        "duplicate_option_key"
+      ],
+      "stem": "完形学派的核心咨询目标有()"
+    }
+  ],
+  "quality_issue_count": 4,
+  "notes": [
+    "Number ranges are expected labels, not guaranteed actual question counts; this import contains 9488 parsed blocks.",
+    "Judgment questions are retained for concept practice and are excluded from the current official simulation template by default.",
+    "Questions with hard structural warnings are retained in the JSON/report for audit but should not enter practice or mock queues until manually verified.",
+    "Topic tags and case-analysis questions are intentionally left for the next enrichment pass."
+  ]
+}

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#17222f" />
+    <title>心理咨询师 · 备考台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-lockup">
+          <div class="brand-mark">心</div>
+          <div>
+            <p class="eyebrow">DEC 05 · 2026</p>
+            <h1>备考台</h1>
+          </div>
+        </div>
+        <p class="brand-note">把每一次作答，变成下一次更稳的选择。</p>
+
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item active" data-view="dashboard"><span>01</span> 今日计划</button>
+          <button class="nav-item" data-view="practice"><span>02</span> 开始刷题</button>
+          <button class="nav-item" data-view="wrong"><span>03</span> 错题本 <b id="nav-wrong-count">0</b></button>
+          <button class="nav-item" data-view="mock"><span>04</span> 全真模拟</button>
+          <button class="nav-item" data-view="stats"><span>05</span> 学习统计</button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="days-chip"><span id="days-left">96</span><small>天</small><em>距离考试</em></div>
+          <p>今日先走 50 步，晚上再回头看一眼走过的路。</p>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <button class="menu-button" id="menu-button" aria-label="打开菜单">☰</button>
+          <div class="breadcrumb"><span>PSYCHOLOGY /</span> <strong id="view-label">今日计划</strong></div>
+          <div class="topbar-actions">
+            <span class="data-status" id="sync-status" data-state="local"><i></i> 仅保存在本机</span>
+            <button class="auth-button" id="auth-button" type="button" title="使用 GitHub 登录并同步学习记录">配置同步</button>
+          </div>
+        </header>
+
+        <div id="app-view" class="view-stage"></div>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
