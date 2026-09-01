@@ -10,12 +10,32 @@ const navWrongCount = document.querySelector('#nav-wrong-count');
 const daysLeftEl = document.querySelector('#days-left');
 const toast = document.querySelector('#toast');
 const sidebar = document.querySelector('#sidebar');
+const menuButton = document.querySelector('#menu-button');
+const sidebarScrim = document.querySelector('#sidebar-scrim');
 const syncStatusEl = document.querySelector('#sync-status');
 const authButton = document.querySelector('#auth-button');
 
 let cloudSync = null;
 let cloudUser = null;
 let syncState = 'local';
+
+function setSidebarOpen(open) {
+  sidebar.classList.toggle('open', open);
+  document.body.classList.toggle('menu-open', open);
+  menuButton?.setAttribute('aria-expanded', String(open));
+  menuButton?.setAttribute('aria-label', open ? '关闭菜单' : '打开菜单');
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+  window.setTimeout(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, 60);
+}
 
 const state = {
   questions: [],
@@ -73,9 +93,22 @@ function saveProgress() {
 }
 
 function applyCloudProgress(progress) {
+  const previous = JSON.stringify({
+    attempts: state.progress.attempts,
+    daily: state.progress.daily,
+    mockHistory: state.progress.mockHistory,
+    settings: state.progress.settings,
+  });
   state.progress = progress;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
-  if (state.questions.length) render();
+  const next = JSON.stringify({
+    attempts: progress.attempts,
+    daily: progress.daily,
+    mockHistory: progress.mockHistory,
+    settings: progress.settings,
+  });
+  // Avoid a second full-page animation when sync only refreshes metadata.
+  if (state.questions.length && previous !== next) render({ animate: false });
 }
 
 function updateSyncShell() {
@@ -234,7 +267,8 @@ function stopTimer() {
   state.timerId = null;
 }
 
-function render() {
+function render({ animate = true } = {}) {
+  app.classList.toggle('no-animate', !animate);
   viewLabel.textContent = labels[state.view] || '';
   document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === state.view));
   if (state.view === 'dashboard') renderDashboard();
@@ -350,10 +384,10 @@ function renderPractice() {
     if (selected) classes.push('selected');
     if (correct) classes.push('correct');
     if (incorrect) classes.push('incorrect');
-    return `<button class="${classes.join(' ')}" data-option="${escapeHtml(option.key)}" ${state.submitted ? 'disabled' : ''}><span class="option-key">${escapeHtml(option.key)}</span><span class="option-text">${escapeHtml(option.text)}</span></button>`;
+    return `<button type="button" class="${classes.join(' ')}" data-option="${escapeHtml(option.key)}" aria-pressed="${selected}" ${state.submitted ? 'disabled' : ''}><span class="option-key" aria-hidden="true">${escapeHtml(option.key)}</span><span class="option-text">${escapeHtml(option.text)}</span></button>`;
   }).join('');
   const result = state.submitted ? isCorrect(q, state.selected) : null;
-  const explanation = state.submitted ? `<div class="explanation"><span class="answer-chip">正确答案 · ${escapeHtml(q.answer)}</span><h4>${result ? '这一题，稳稳拿下。' : '这道题先留下，下一轮再见。'}</h4><p>${escapeHtml(q.explanation || '这道题暂时没有解析，请在复习时补充自己的理解。')}</p></div>` : '';
+  const explanation = state.submitted ? `<div class="explanation" role="status" aria-live="polite"><span class="answer-chip">正确答案 · ${escapeHtml(q.answer)}</span><h4>${result ? '这一题，稳稳拿下。' : '这道题先留下，下一轮再见。'}</h4><p>${escapeHtml(q.explanation || '这道题暂时没有解析，请在复习时补充自己的理解。')}</p></div>` : '';
 
   app.innerHTML = `
     <div class="practice-top"><span class="session-tag">${escapeHtml(sessionLabel)} / ${typeShort(q.type)}</span><span class="session-progress">${index} / ${total}${isMock ? ` · <b id="session-timer">${formatSeconds(state.timerSeconds)}</b>` : ''}</span></div>
@@ -382,7 +416,7 @@ function renderWrong() {
   }).sort((a, b) => getAttempt(b).wrong - getAttempt(a).wrong);
   app.innerHTML = `
     <section class="hero-row"><div><p class="kicker">Recovery room / 03</p><h2 class="page-title">错题会回来，<br /><em>你也会更稳。</em></h2><p class="hero-copy">这里收着你曾经犹豫、误读或忘记的地方。一次做对不算离开，连续做对才会毕业。</p></div><div class="date-stamp"><strong>${wrong.length}</strong>道未掌握题</div></section>
-    <div class="toolbar"><select class="select-like" id="wrong-type-filter"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option></select><select class="select-like" id="wrong-status-filter"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${wrong.length ? '<button class="btn btn-primary" data-action="start-wrong">开始复习 →</button>' : ''}</div>
+    <div class="toolbar"><select class="select-like" id="wrong-type-filter" aria-label="按题型筛选"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option></select><select class="select-like" id="wrong-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${wrong.length ? '<button class="btn btn-primary" data-action="start-wrong">开始复习 →</button>' : ''}</div>
     <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number">Q${String(q.source_question_no).padStart(4, '0')}</span><div class="stem-mini">${escapeHtml(q.stem)}</div><small>${typeShort(q.type)} · 错 ${a.wrong} 次</small><span class="pill warning">${a.status === 'mastered' ? '已掌握' : `下次 ${formatDate(a.dueAt)}`}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>先去做几道题，系统会替你留下真正值得回看的地方。</p></div>'}</div>
   `;
   document.querySelector('#wrong-type-filter').value = state.filters.wrongType;
@@ -456,8 +490,10 @@ function startSession(mode, subject = '') {
   state.confidence = 'medium';
   state.submitted = false;
   state.view = 'practice';
+  setSidebarOpen(false);
   if (mode === 'mock') startTimer(120 * 60);
   renderPractice();
+  scrollToTop();
   if (!state.queue.length) toastMessage(mode === 'wrong' ? '当前没有到期错题。' : '这一轮没有可用的新题了。');
 }
 
@@ -513,6 +549,7 @@ function nextQuestion() {
   state.queueIndex += 1;
   resetQuestion();
   renderPractice();
+  scrollToTop();
 }
 
 function finalizeMock() {
@@ -549,8 +586,9 @@ document.addEventListener('click', (event) => {
     state.session = null;
     state.queue = [];
     state.view = nav.dataset.view;
-    sidebar.classList.remove('open');
+    setSidebarOpen(false);
     render();
+    scrollToTop();
     return;
   }
   const option = event.target.closest('[data-option]');
@@ -600,7 +638,16 @@ document.addEventListener('change', (event) => {
   if (event.target.id === 'wrong-status-filter') { state.filters.wrongStatus = event.target.value; renderWrong(); }
 });
 
-document.querySelector('#menu-button').addEventListener('click', () => sidebar.classList.toggle('open'));
+menuButton?.addEventListener('click', () => setSidebarOpen(!sidebar.classList.contains('open')));
+sidebarScrim?.addEventListener('click', () => setSidebarOpen(false));
+document.addEventListener('click', (event) => {
+  if (!sidebar.classList.contains('open')) return;
+  if (sidebar.contains(event.target) || menuButton?.contains(event.target)) return;
+  setSidebarOpen(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && sidebar.classList.contains('open')) setSidebarOpen(false);
+});
 
 authButton?.addEventListener('click', async () => {
   if (syncState === 'error' && !cloudSync) {
