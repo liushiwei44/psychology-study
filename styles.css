@@ -254,7 +254,7 @@ button { cursor: pointer; }
 
 @keyframes fade-up { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes status-pulse { 50% { opacity: .38; transform: scale(.75); } }
-.view-stage > * { animation: fade-up .35s ease both; }
+.view-stage > * { animation: none; }
 .view-stage.no-animate > * { animation: none; }
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 3px solid rgba(216, 93, 64, .3);
