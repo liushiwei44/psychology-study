@@ -5,7 +5,7 @@ const SUPABASE_ESM_URL = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+
 
 function latestAttemptTime(attempt) {
   const history = attempt?.history || [];
-  const value = history.at(-1)?.at || '';
+  const value = attempt?.updatedAt || history.at(-1)?.at || '';
   return value ? new Date(value).getTime() : 0;
 }
 

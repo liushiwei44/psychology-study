@@ -150,7 +150,8 @@ function questionId(q) {
 
 function getAttempt(q) {
   const id = questionId(q);
-  return state.progress.attempts[id] || {
+  const saved = state.progress.attempts[id] || {};
+  return {
     attempts: 0,
     correct: 0,
     wrong: 0,
@@ -160,7 +161,26 @@ function getAttempt(q) {
     status: 'new',
     dueAt: null,
     history: [],
+    flagged: false,
+    flaggedAt: null,
+    updatedAt: null,
+    ...saved,
+    history: saved.history || [],
   };
+}
+
+function isWrongBookEntry(attempt) {
+  return attempt.wrong > 0 || attempt.flagged === true;
+}
+
+function isReviewCandidate(attempt) {
+  return isWrongBookEntry(attempt)
+    || (attempt.attempts > 0 && (attempt.confidence === 'medium' || attempt.confidence === 'low'));
+}
+
+function wrongBookReason(attempt) {
+  if (attempt.wrong > 0) return `错 ${attempt.wrong} 次`;
+  return '手动加入';
 }
 
 function typeLabel(type) {
@@ -224,14 +244,18 @@ function dueQuestions() {
   return state.questions.filter((q) => {
     if (!isUsable(q)) return false;
     const attempt = getAttempt(q);
-    return (attempt.wrong > 0 || attempt.confidence === 'low') && (!attempt.dueAt || new Date(attempt.dueAt).getTime() <= now) && attempt.status !== 'mastered';
+    return isReviewCandidate(attempt) && (!attempt.dueAt || new Date(attempt.dueAt).getTime() <= now) && attempt.status !== 'mastered';
   });
+}
+
+function dueWrongBookQuestions() {
+  return dueQuestions().filter((q) => isWrongBookEntry(getAttempt(q)));
 }
 
 function updateShellStats() {
   const wrong = state.questions.filter((q) => {
     const a = getAttempt(q);
-    return a.wrong > 0 && a.status !== 'mastered';
+    return isWrongBookEntry(a) && a.status !== 'mastered';
   }).length;
   navWrongCount.textContent = wrong;
   daysLeftEl.textContent = daysLeft();
@@ -372,7 +396,7 @@ function renderPractice() {
   const total = state.queue.length;
   const index = state.queueIndex + 1;
   const attempt = getAttempt(q);
-  const sessionLabel = state.session?.mode === 'mock' ? `${state.session.subject} · 模拟` : state.session?.mode === 'wrong' ? '错题复习' : '今日首刷';
+  const sessionLabel = state.session?.mode === 'mock' ? `${state.session.subject} · 模拟` : state.session?.mode === 'wrong' || state.session?.mode === 'wrong-book' ? '错题复习' : '今日首刷';
   const isMock = state.session?.mode === 'mock';
   const selectedAnswer = [...state.selected].sort().join('');
   const correctKeys = getCorrectKeys(q);
@@ -387,6 +411,12 @@ function renderPractice() {
     return `<button type="button" class="${classes.join(' ')}" data-option="${escapeHtml(option.key)}" aria-pressed="${selected}" ${state.submitted ? 'disabled' : ''}><span class="option-key" aria-hidden="true">${escapeHtml(option.key)}</span><span class="option-text">${escapeHtml(option.text)}</span></button>`;
   }).join('');
   const result = state.submitted ? isCorrect(q, state.selected) : null;
+  const inWrongBook = isWrongBookEntry(attempt);
+  const wrongBookButton = attempt.status === 'mastered'
+    ? '<button class="btn btn-confirmed" type="button" disabled>✓ 已掌握</button>'
+    : inWrongBook
+      ? '<button class="btn btn-confirmed" type="button" disabled>✓ 已加入错题本</button>'
+      : '<button class="btn btn-ghost" type="button" data-action="flag-question">加入错题本</button>';
   const explanation = state.submitted ? `<div class="explanation" role="status" aria-live="polite"><span class="answer-chip">正确答案 · ${escapeHtml(q.answer)}</span><h4>${result ? '这一题，稳稳拿下。' : '这道题先留下，下一轮再见。'}</h4><p>${escapeHtml(q.explanation || '这道题暂时没有解析，请在复习时补充自己的理解。')}</p></div>` : '';
 
   app.innerHTML = `
@@ -399,7 +429,7 @@ function renderPractice() {
         ${explanation}
         <div class="question-actions">
           ${!state.submitted ? `<div class="confidence-row"><span>我的把握</span>${['high','medium','low'].map((level) => `<button class="${state.confidence === level ? 'active' : ''}" data-confidence="${level}">${level === 'high' ? '有把握' : level === 'medium' ? '模糊' : '蒙的'}</button>`).join('')}</div>` : `<div class="confidence-row"><span>${result ? '已记录正确' : '已进入错题本'}</span></div>`}
-          <div class="action-cluster">${!state.submitted ? `${isMock ? '<button class="btn btn-ghost" data-action="finish-mock">提前交卷</button>' : '<button class="btn btn-ghost" data-action="quit-session">退出</button>'}<button class="btn btn-primary" data-action="submit-answer" ${state.selected.size ? '' : 'disabled'}>提交答案 ↗</button>` : `<button class="btn btn-ghost" data-action="flag-question">${attempt.status === 'mastered' ? '已掌握' : '加入错题本'}</button><button class="btn btn-primary" data-action="next-question">下一题 →</button>`}</div>
+          <div class="action-cluster">${!state.submitted ? `${isMock ? '<button class="btn btn-ghost" data-action="finish-mock">提前交卷</button>' : '<button class="btn btn-ghost" data-action="quit-session">退出</button>'}<button class="btn btn-primary" data-action="submit-answer" ${state.selected.size ? '' : 'disabled'}>提交答案 ↗</button>` : `${wrongBookButton}<button class="btn btn-primary" data-action="next-question">下一题 →</button>`}</div>
         </div>
       </article>
       <aside class="side-stack"><div class="panel side-panel"><h4>这次作答</h4><div class="tiny-row"><span>选择</span><strong>${selectedAnswer || '—'}</strong></div><div class="tiny-row"><span>题型</span><strong>${typeShort(q.type)}</strong></div><div class="tiny-row"><span>历史作答</span><strong>${attempt.attempts} 次</strong></div><div class="tiny-row"><span>下次复习</span><strong>${formatDate(attempt.dueAt)}</strong></div></div><div class="tip-box"><strong>给自己留一行</strong>错题不是惩罚，是下一次检索记忆的入口。提交后可以在错题本里写下“我为什么会选错”。</div></aside>
@@ -412,12 +442,17 @@ function renderWrong() {
     const a = getAttempt(q);
     const typeOk = state.filters.wrongType === 'all' || q.type === state.filters.wrongType;
     const statusOk = state.filters.wrongStatus === 'all' || a.status === state.filters.wrongStatus;
-    return a.wrong > 0 && typeOk && statusOk;
+    return isWrongBookEntry(a) && typeOk && statusOk;
   }).sort((a, b) => getAttempt(b).wrong - getAttempt(a).wrong);
+  const activeWrongCount = state.questions.filter((q) => {
+    const attempt = getAttempt(q);
+    return isWrongBookEntry(attempt) && attempt.status !== 'mastered';
+  }).length;
+  const dueCount = dueWrongBookQuestions().length;
   app.innerHTML = `
-    <section class="hero-row"><div><p class="kicker">Recovery room / 03</p><h2 class="page-title">错题会回来，<br /><em>你也会更稳。</em></h2><p class="hero-copy">这里收着你曾经犹豫、误读或忘记的地方。一次做对不算离开，连续做对才会毕业。</p></div><div class="date-stamp"><strong>${wrong.length}</strong>道未掌握题</div></section>
-    <div class="toolbar"><select class="select-like" id="wrong-type-filter" aria-label="按题型筛选"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option></select><select class="select-like" id="wrong-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${wrong.length ? '<button class="btn btn-primary" data-action="start-wrong">开始复习 →</button>' : ''}</div>
-    <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number">Q${String(q.source_question_no).padStart(4, '0')}</span><div class="stem-mini">${escapeHtml(q.stem)}</div><small>${typeShort(q.type)} · 错 ${a.wrong} 次</small><span class="pill warning">${a.status === 'mastered' ? '已掌握' : `下次 ${formatDate(a.dueAt)}`}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>先去做几道题，系统会替你留下真正值得回看的地方。</p></div>'}</div>
+    <section class="hero-row"><div><p class="kicker">Recovery room / 03</p><h2 class="page-title">错题会回来，<br /><em>你也会更稳。</em></h2><p class="hero-copy">这里收着答错和手动加入的题。一次做对不算离开，连续做对才会毕业。</p></div><div class="date-stamp"><strong>${activeWrongCount}</strong>道未掌握题</div></section>
+    <div class="toolbar"><select class="select-like" id="wrong-type-filter" aria-label="按题型筛选"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option></select><select class="select-like" id="wrong-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${dueCount ? `<button class="btn btn-primary" data-action="start-wrong-book">复习到期错题（${dueCount}）→</button>` : ''}</div>
+    <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number">Q${String(q.source_question_no).padStart(4, '0')}</span><div class="stem-mini">${escapeHtml(q.stem)}</div><small>${typeShort(q.type)} · ${wrongBookReason(a)}</small><span class="pill ${a.status === 'mastered' ? '' : 'warning'}">${a.status === 'mastered' ? '已掌握' : `下次 ${formatDate(a.dueAt)}`}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>答错或手动加入的题，会保留在这里。</p></div>'}</div>
   `;
   document.querySelector('#wrong-type-filter').value = state.filters.wrongType;
   document.querySelector('#wrong-status-filter').value = state.filters.wrongStatus;
@@ -454,7 +489,7 @@ function renderStats() {
     <div class="section-heading"><h3>按题型看进度</h3><span class="label">MVP live data</span></div>
     <div class="panel bar-chart"><h3>每一种题型，都有自己的节奏</h3>${byType.map((x) => `<div class="bar"><span>${typeLabel(x.type)}</span><div class="bar-track"><span style="width:${Math.round(x.count / max * 100)}%;background:${x.type === 'multiple' ? 'var(--sage)' : x.type === 'judgment' ? 'var(--ink)' : 'var(--orange)'}"></span></div><em>${x.practiced}/${x.count}</em></div><div class="bar" style="margin-top:-5px"><span style="font-size:9px;color:#99a2a5">准确率</span><div class="bar-track" style="height:4px"><span style="width:${x.accuracy}%;background:#9aa6a5"></span></div><em>${x.accuracy}%</em></div>`).join('')}</div>
     <div class="section-heading"><h3>本地数据</h3><span class="label">不会上传</span></div>
-    <div class="panel card-pad"><div class="tiny-row"><span>PDF 实际解析</span><strong>${state.questions.length.toLocaleString()}</strong></div><div class="tiny-row"><span>可进入练习</span><strong>${state.questions.filter(isUsable).length.toLocaleString()}</strong></div><div class="tiny-row"><span>待人工确认</span><strong>${state.report?.quality_issue_count || 0}</strong></div><div class="tiny-row"><span>当前错题</span><strong>${dueQuestions().length}</strong></div><div class="tiny-row"><span>模拟次数</span><strong>${(state.progress.mockHistory || []).length}</strong></div><div class="tiny-row"><span>今日目标</span><strong>${state.progress.settings.dailyTarget || DAILY_DEFAULT} 题</strong></div><div style="margin-top:18px"><label class="label" for="daily-target">调整每日首刷目标</label><div style="display:flex;gap:9px;margin-top:8px"><input id="daily-target" class="input-like" type="number" min="10" max="300" value="${state.progress.settings.dailyTarget || DAILY_DEFAULT}" /><button class="btn btn-ghost" data-action="save-target">保存目标</button></div></div><div style="margin-top:18px;padding-top:15px;border-top:1px solid var(--line)"><button class="btn btn-ghost" data-action="reset-progress">清空本机学习记录</button></div></div>
+    <div class="panel card-pad"><div class="tiny-row"><span>PDF 实际解析</span><strong>${state.questions.length.toLocaleString()}</strong></div><div class="tiny-row"><span>可进入练习</span><strong>${state.questions.filter(isUsable).length.toLocaleString()}</strong></div><div class="tiny-row"><span>待人工确认</span><strong>${state.report?.quality_issue_count || 0}</strong></div><div class="tiny-row"><span>当前错题</span><strong>${dueQuestions().length}</strong></div><div class="tiny-row"><span>模拟次数</span><strong>${(state.progress.mockHistory || []).length}</strong></div><div class="tiny-row"><span>今日目标</span><strong>${state.progress.settings.dailyTarget || DAILY_DEFAULT} 题</strong></div><div style="margin-top:18px"><label class="label" for="daily-target">调整每日首刷目标</label><div style="display:flex;gap:9px;margin-top:8px"><input id="daily-target" class="input-like" name="dailyTarget" type="number" inputmode="numeric" autocomplete="off" min="10" max="300" value="${state.progress.settings.dailyTarget || DAILY_DEFAULT}" /><button class="btn btn-ghost" data-action="save-target">保存目标</button></div></div><div style="margin-top:18px;padding-top:15px;border-top:1px solid var(--line)"><button class="btn btn-ghost" data-action="reset-progress">清空本机学习记录</button></div></div>
     ${qualityIssues.length ? `<div class="section-heading"><h3>待人工确认的源题</h3><span class="label">不会静默修补</span></div><div class="panel card-pad">${qualityIssues.map((item) => `<div class="queue-item"><span class="queue-index">Q${String(item.source_question_no).padStart(4, '0')}</span><div class="queue-info"><strong>${escapeHtml(item.stem)}</strong><span>${typeLabel(item.type)} · ${escapeHtml(item.warnings.join('、'))}</span></div><span class="pill warning">暂不练习</span></div>`).join('')}</div>` : ''}
   `;
 }
@@ -474,6 +509,10 @@ function buildWrongQueue() {
   return dueQuestions().sort((a, b) => getAttempt(b).wrong - getAttempt(a).wrong).slice(0, state.progress.settings.dailyTarget || DAILY_DEFAULT).map(questionId);
 }
 
+function buildWrongBookQueue() {
+  return dueWrongBookQuestions().sort((a, b) => getAttempt(b).wrong - getAttempt(a).wrong).slice(0, state.progress.settings.dailyTarget || DAILY_DEFAULT).map(questionId);
+}
+
 function buildMockQueue() {
   const singles = relevantQuestions().filter((q) => q.type === 'single');
   const multiples = relevantQuestions().filter((q) => q.type === 'multiple');
@@ -484,7 +523,7 @@ function buildMockQueue() {
 function startSession(mode, subject = '') {
   stopTimer();
   state.session = { mode, subject, startedAt: Date.now(), answers: {} };
-  state.queue = mode === 'daily' ? buildDailyQueue() : mode === 'wrong' ? buildWrongQueue() : buildMockQueue();
+  state.queue = mode === 'daily' ? buildDailyQueue() : mode === 'wrong' ? buildWrongQueue() : mode === 'wrong-book' ? buildWrongBookQueue() : buildMockQueue();
   state.queueIndex = 0;
   state.selected = new Set();
   state.confidence = 'medium';
@@ -494,7 +533,7 @@ function startSession(mode, subject = '') {
   if (mode === 'mock') startTimer(120 * 60);
   renderPractice();
   scrollToTop();
-  if (!state.queue.length) toastMessage(mode === 'wrong' ? '当前没有到期错题。' : '这一轮没有可用的新题了。');
+  if (!state.queue.length) toastMessage(mode === 'wrong' || mode === 'wrong-book' ? '当前没有到期错题。' : '这一轮没有可用的新题了。');
 }
 
 function resetQuestion() {
@@ -521,6 +560,7 @@ function recordAnswer() {
     status: correct && state.confidence === 'high' && previous.correct > 0 ? 'mastered' : correct ? 'reviewing' : 'new',
     dueAt: correct && state.confidence === 'high' ? new Date(Date.now() + 7 * 86400000).toISOString() : new Date(Date.now() + (correct ? 3 : 1) * 86400000).toISOString(),
     history: [...(previous.history || []), { at: now, answer: q.type === 'judgment' ? [...state.selected][0] || '' : [...state.selected].sort().join(''), correct, confidence: state.confidence }].slice(-12),
+    updatedAt: now,
   };
   state.progress.attempts[id] = next;
   if (state.session?.mode === 'mock') {
@@ -533,6 +573,29 @@ function recordAnswer() {
   }
   saveProgress();
   state.submitted = true;
+}
+
+function flagCurrentQuestion() {
+  const q = currentQuestion();
+  if (!q || !state.submitted) return;
+  const id = questionId(q);
+  const previous = getAttempt(q);
+  if (isWrongBookEntry(previous)) {
+    toastMessage('这道题已经在错题本里。');
+    return;
+  }
+  const now = new Date().toISOString();
+  state.progress.attempts[id] = {
+    ...previous,
+    flagged: true,
+    flaggedAt: now,
+    updatedAt: now,
+    status: previous.status === 'mastered' ? 'reviewing' : previous.status,
+    dueAt: now,
+  };
+  saveProgress();
+  renderPractice();
+  toastMessage('已加入错题本，左侧数量已更新。');
 }
 
 function nextQuestion() {
@@ -611,12 +674,13 @@ document.addEventListener('click', (event) => {
   const name = action.dataset.action;
   if (name === 'start-daily') startSession('daily');
   if (name === 'start-wrong') startSession('wrong');
+  if (name === 'start-wrong-book') startSession('wrong-book');
   if (name === 'start-mock') startSession('mock', action.dataset.subject || '基础知识');
   if (name === 'submit-answer') { recordAnswer(); renderPractice(); }
   if (name === 'next-question') nextQuestion();
   if (name === 'quit-session') { stopTimer(); state.session = null; state.queue = []; state.view = 'dashboard'; render(); }
   if (name === 'finish-mock') finalizeMock();
-  if (name === 'flag-question') toastMessage('这道题已经在你的复习记录里。');
+  if (name === 'flag-question') flagCurrentQuestion();
   if (name === 'go-wrong') { state.view = 'wrong'; render(); }
   if (name === 'go-stats') { state.view = 'stats'; render(); }
   if (name === 'go-mock') { state.view = 'mock'; state.session = null; render(); }
