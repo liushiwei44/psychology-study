@@ -27,7 +27,7 @@ jobs:
       - name: Prepare static site
         run: |
           mkdir -p dist/data
-          cp index.html styles.css app.js config.js supabase-sync.js .nojekyll dist/
+          cp index.html styles.css app.js study-rules.mjs config.js supabase-sync.js .nojekyll dist/
           cp data/questions.json data/import_report.json dist/data/
 
       - name: Configure Pages
@@ -41,4 +41,3 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
-

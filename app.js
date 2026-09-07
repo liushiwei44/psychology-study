@@ -1,4 +1,5 @@
 import { createCloudSync } from './supabase-sync.js';
+import { hasConfidenceReviewPending, normalizeLegacyReviewState, planReview } from './study-rules.mjs';
 
 const STORAGE_KEY = 'psychology-study-progress-v1';
 const DAILY_DEFAULT = 50;
@@ -45,7 +46,7 @@ const state = {
   queue: [],
   queueIndex: 0,
   selected: new Set(),
-  confidence: 'medium',
+  confidence: 'high',
   submitted: false,
   session: null,
   timerId: null,
@@ -151,13 +152,14 @@ function questionId(q) {
 function getAttempt(q) {
   const id = questionId(q);
   const saved = state.progress.attempts[id] || {};
-  return {
+  return normalizeLegacyReviewState({
     attempts: 0,
     correct: 0,
     wrong: 0,
     lastAnswer: '',
     lastCorrect: null,
     confidence: null,
+    reviewPending: null,
     status: 'new',
     dueAt: null,
     history: [],
@@ -166,7 +168,7 @@ function getAttempt(q) {
     updatedAt: null,
     ...saved,
     history: saved.history || [],
-  };
+  });
 }
 
 function isWrongBookEntry(attempt) {
@@ -175,7 +177,7 @@ function isWrongBookEntry(attempt) {
 
 function isReviewCandidate(attempt) {
   return isWrongBookEntry(attempt)
-    || (attempt.attempts > 0 && (attempt.confidence === 'medium' || attempt.confidence === 'low'));
+    || hasConfidenceReviewPending(attempt);
 }
 
 function wrongBookReason(attempt) {
@@ -384,9 +386,9 @@ function renderPracticeLauncher() {
     <section class="hero-row"><div><p class="kicker">Practice room / 02</p><h2 class="page-title">把答案留到<br /><em>提交之后。</em></h2><p class="hero-copy">首刷模式优先推送还没做过的单选和多选题。你可以放心猜，系统会把犹豫和错误都留下来。</p></div><div class="date-stamp"><strong>${target} 题</strong>今日首刷目标</div></section>
     <div class="grid mock-grid">
       <article class="panel mock-card"><span class="mock-badge">FIRST PASS / 首刷</span><h3>今日新题</h3><p>不看答案，完成一轮真实选择。提交后再读解析，错题会自动被收进复习队列。</p><div class="mock-meta"><div><strong>${target}</strong><span>今日目标</span></div><div><strong>${relevantQuestions().filter((q) => getAttempt(q).attempts === 0).length.toLocaleString()}</strong><span>尚未首刷</span></div></div><button class="btn btn-primary" data-action="start-daily">开始首刷 →</button></article>
-      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>把已经忘记边缘的题重新捞出来。做对不代表结束，连续稳定做对才算掌握。</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>1·3·7</strong><span>复习间隔</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
+      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>把答错、蒙对和仍然模糊的题重新捞出来，同时优先保证新题首刷进度。</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>1·3·7</strong><span>复习间隔</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
     </div>
-    <div class="tip-box" style="margin-top:18px"><strong>首刷小规则</strong>如果题目会做但没有把握，提交后把信心标成“模糊”；它也会被安排回来。判断题目前作为概念辨析，不计入正式模拟。</div>
+    <div class="tip-box" style="margin-top:18px"><strong>首刷小规则</strong>答对且有把握暂不复习；蒙对 3 天后、模糊答对 7 天后各复查一次，再次答对便退出队列。答错题始终保留在错题本。判断题目前作为概念辨析，不计入正式模拟。</div>
   `;
 }
 
@@ -526,7 +528,7 @@ function startSession(mode, subject = '') {
   state.queue = mode === 'daily' ? buildDailyQueue() : mode === 'wrong' ? buildWrongQueue() : mode === 'wrong-book' ? buildWrongBookQueue() : buildMockQueue();
   state.queueIndex = 0;
   state.selected = new Set();
-  state.confidence = 'medium';
+  state.confidence = 'high';
   state.submitted = false;
   state.view = 'practice';
   setSidebarOpen(false);
@@ -538,7 +540,7 @@ function startSession(mode, subject = '') {
 
 function resetQuestion() {
   state.selected = new Set();
-  state.confidence = 'medium';
+  state.confidence = 'high';
   state.submitted = false;
 }
 
@@ -549,6 +551,7 @@ function recordAnswer() {
   const correct = isCorrect(q, state.selected);
   const previous = getAttempt(q);
   const now = new Date().toISOString();
+  const reviewPlan = planReview(previous, { correct, confidence: state.confidence });
   const next = {
     ...previous,
     attempts: previous.attempts + 1,
@@ -557,8 +560,9 @@ function recordAnswer() {
     lastAnswer: q.type === 'judgment' ? [...state.selected][0] || '' : [...state.selected].sort().join(''),
     lastCorrect: correct,
     confidence: state.confidence,
-    status: correct && state.confidence === 'high' && previous.correct > 0 ? 'mastered' : correct ? 'reviewing' : 'new',
-    dueAt: correct && state.confidence === 'high' ? new Date(Date.now() + 7 * 86400000).toISOString() : new Date(Date.now() + (correct ? 3 : 1) * 86400000).toISOString(),
+    status: reviewPlan.status,
+    dueAt: reviewPlan.dueAt,
+    reviewPending: reviewPlan.reviewPending,
     history: [...(previous.history || []), { at: now, answer: q.type === 'judgment' ? [...state.selected][0] || '' : [...state.selected].sort().join(''), correct, confidence: state.confidence }].slice(-12),
     updatedAt: now,
   };
