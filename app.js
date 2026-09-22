@@ -2,6 +2,7 @@ import { createCloudSync } from './supabase-sync.js';
 import { hasConfidenceReviewPending, normalizeLegacyReviewState, planReview } from './study-rules.mjs';
 
 const STORAGE_KEY = 'psychology-study-progress-v1';
+const SESSION_STORAGE_KEY = 'psychology-active-session-v1';
 const DAILY_DEFAULT = 50;
 const EXAM_DATE = new Date('2026-12-05T00:00:00');
 
@@ -109,7 +110,58 @@ function applyCloudProgress(progress) {
     settings: progress.settings,
   });
   // Avoid a second full-page animation when sync only refreshes metadata.
-  if (state.questions.length && previous !== next) render({ animate: false });
+  if (state.questions.length && previous !== next) {
+    // Cloud reconciliation can happen while a practice round is open. The
+    // generic renderer would replace the question screen with the launcher,
+    // which looks like the session randomly exited. Keep the active round on
+    // screen and only refresh its data underneath.
+    if (state.view === 'practice' && state.session && state.queue.length) renderPractice();
+    else render({ animate: false });
+  }
+}
+
+function saveActiveSession() {
+  if (!state.session || !state.queue.length) return;
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+    savedAt: Date.now(),
+    session: state.session,
+    queue: state.queue,
+    queueIndex: state.queueIndex,
+    selected: [...state.selected],
+    confidence: state.confidence,
+    submitted: state.submitted,
+    timerSeconds: state.timerSeconds,
+  }));
+}
+
+function clearActiveSession() {
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function restoreActiveSession() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
+    if (!saved?.session || !Array.isArray(saved.queue) || !saved.queue.length) return false;
+    if (!saved.queue.every((id) => state.questions.some((q) => questionId(q) === id))) {
+      clearActiveSession();
+      return false;
+    }
+    state.session = saved.session;
+    state.queue = saved.queue;
+    state.queueIndex = Math.min(Math.max(Number(saved.queueIndex) || 0, 0), state.queue.length - 1);
+    state.selected = new Set(Array.isArray(saved.selected) ? saved.selected : []);
+    state.confidence = saved.confidence || 'high';
+    state.submitted = Boolean(saved.submitted);
+    state.view = 'practice';
+    if (state.session.mode === 'mock') {
+      const elapsed = Math.max(0, Math.floor((Date.now() - Number(saved.savedAt || Date.now())) / 1000));
+      startTimer(Math.max(0, (Number(saved.timerSeconds) || 0) - elapsed));
+    }
+    return true;
+  } catch (_) {
+    clearActiveSession();
+    return false;
+  }
 }
 
 function updateSyncShell() {
@@ -533,6 +585,7 @@ function startSession(mode, subject = '') {
   state.view = 'practice';
   setSidebarOpen(false);
   if (mode === 'mock') startTimer(120 * 60);
+  saveActiveSession();
   renderPractice();
   scrollToTop();
   if (!state.queue.length) toastMessage(mode === 'wrong' || mode === 'wrong-book' ? '当前没有到期错题。' : '这一轮没有可用的新题了。');
@@ -542,6 +595,7 @@ function resetQuestion() {
   state.selected = new Set();
   state.confidence = 'high';
   state.submitted = false;
+  saveActiveSession();
 }
 
 function recordAnswer() {
@@ -577,6 +631,7 @@ function recordAnswer() {
   }
   saveProgress();
   state.submitted = true;
+  saveActiveSession();
 }
 
 function flagCurrentQuestion() {
@@ -598,6 +653,7 @@ function flagCurrentQuestion() {
     dueAt: now,
   };
   saveProgress();
+  saveActiveSession();
   renderPractice();
   toastMessage('已加入错题本，左侧数量已更新。');
 }
@@ -607,6 +663,7 @@ function nextQuestion() {
     if (state.session?.mode === 'mock') return finalizeMock();
     stopTimer();
     toastMessage('这一轮完成，做得漂亮。');
+    clearActiveSession();
     state.session = null;
     state.queue = [];
     state.view = 'dashboard';
@@ -616,6 +673,7 @@ function nextQuestion() {
   state.queueIndex += 1;
   resetQuestion();
   renderPractice();
+  saveActiveSession();
   scrollToTop();
 }
 
@@ -635,6 +693,7 @@ function finalizeMock() {
   state.progress.mockHistory ||= [];
   state.progress.mockHistory.push(result);
   saveProgress();
+  clearActiveSession();
   state.session = { ...state.session, mode: 'mock-summary', result };
   state.queue = [];
   state.submitted = true;
@@ -650,6 +709,7 @@ document.addEventListener('click', (event) => {
   const nav = event.target.closest('[data-view]');
   if (nav) {
     stopTimer();
+    clearActiveSession();
     state.session = null;
     state.queue = [];
     state.view = nav.dataset.view;
@@ -664,12 +724,14 @@ document.addEventListener('click', (event) => {
     if (q?.type === 'single' || q?.type === 'judgment') state.selected = new Set([option.dataset.option]);
     else if (state.selected.has(option.dataset.option)) state.selected.delete(option.dataset.option);
     else state.selected.add(option.dataset.option);
+    saveActiveSession();
     renderPractice();
     return;
   }
   const confidence = event.target.closest('[data-confidence]');
   if (confidence && !state.submitted) {
     state.confidence = confidence.dataset.confidence;
+    saveActiveSession();
     renderPractice();
     return;
   }
@@ -682,12 +744,12 @@ document.addEventListener('click', (event) => {
   if (name === 'start-mock') startSession('mock', action.dataset.subject || '基础知识');
   if (name === 'submit-answer') { recordAnswer(); renderPractice(); }
   if (name === 'next-question') nextQuestion();
-  if (name === 'quit-session') { stopTimer(); state.session = null; state.queue = []; state.view = 'dashboard'; render(); }
+  if (name === 'quit-session') { stopTimer(); clearActiveSession(); state.session = null; state.queue = []; state.view = 'dashboard'; render(); }
   if (name === 'finish-mock') finalizeMock();
   if (name === 'flag-question') flagCurrentQuestion();
   if (name === 'go-wrong') { state.view = 'wrong'; render(); }
   if (name === 'go-stats') { state.view = 'stats'; render(); }
-  if (name === 'go-mock') { state.view = 'mock'; state.session = null; render(); }
+  if (name === 'go-mock') { clearActiveSession(); state.view = 'mock'; state.session = null; render(); }
   if (name === 'save-target') {
     const value = Math.max(10, Math.min(300, Number(document.querySelector('#daily-target')?.value || DAILY_DEFAULT)));
     state.progress.settings.dailyTarget = value;
@@ -717,6 +779,9 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && sidebar.classList.contains('open')) setSidebarOpen(false);
 });
 
+window.addEventListener('pagehide', saveActiveSession);
+window.addEventListener('beforeunload', saveActiveSession);
+
 authButton?.addEventListener('click', async () => {
   if (syncState === 'error' && !cloudSync) {
     toastMessage('云同步组件暂不可用，学习记录仍已安全保存在本机。');
@@ -744,7 +809,10 @@ async function init() {
     const [questionsResponse, reportResponse] = await Promise.all([fetch('./data/questions.json'), fetch('./data/import_report.json')]);
     state.questions = await questionsResponse.json();
     state.report = await reportResponse.json();
-    render();
+    if (restoreActiveSession()) {
+      renderPractice();
+      toastMessage('已恢复上次未完成的刷题进度。');
+    } else render();
   } catch (error) {
     app.innerHTML = `<div class="panel empty-state"><div class="empty-symbol">!</div><h3>题库还没有加载成功</h3><p>请在项目目录启动本地静态服务器后访问页面，例如 <code>python3 -m http.server 4173</code>。</p><p class="mono">${escapeHtml(error.message)}</p></div>`;
     return;
