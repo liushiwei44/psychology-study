@@ -9,16 +9,40 @@ function latestAttemptTime(attempt) {
   return value ? new Date(value).getTime() : 0;
 }
 
+function mergeAttempt(local, cloud) {
+  if (!local || !cloud) return local || cloud;
+  if (JSON.stringify(local) === JSON.stringify(cloud)) return local;
+  const newer = latestAttemptTime(local) >= latestAttemptTime(cloud) ? local : cloud;
+  const older = newer === local ? cloud : local;
+  const events = new Map();
+  for (const event of [...(older.history || []), ...(newer.history || [])]) {
+    const key = JSON.stringify([event.at, event.answer, event.correct, event.confidence]);
+    events.set(key, { ...events.get(key), ...event });
+  }
+  const history = [...events.values()].sort((a, b) => new Date(a.at) - new Date(b.at));
+  const correct = Math.max(local.correct || 0, cloud.correct || 0, history.filter((e) => e.correct === true).length);
+  const wrong = Math.max(local.wrong || 0, cloud.wrong || 0, history.filter((e) => e.correct === false).length);
+  return {
+    ...older,
+    ...newer,
+    // Legacy clients retained only 12 events. Keep their lifetime counts as
+    // lower bounds, and retain every event still available on either device.
+    attempts: Math.max(local.attempts || 0, cloud.attempts || 0, history.length, correct + wrong),
+    correct,
+    wrong,
+    flagged: local.flagged === true || cloud.flagged === true,
+    flaggedAt: newer.flaggedAt || older.flaggedAt || null,
+    history,
+  };
+}
+
 export function mergeProgress(localValue, cloudValue) {
   const local = localValue || {};
   const cloud = cloudValue || {};
   const attempts = { ...(cloud.attempts || {}) };
 
   Object.entries(local.attempts || {}).forEach(([id, attempt]) => {
-    const cloudAttempt = attempts[id];
-    if (!cloudAttempt || latestAttemptTime(attempt) >= latestAttemptTime(cloudAttempt)) {
-      attempts[id] = attempt;
-    }
+    attempts[id] = mergeAttempt(attempt, attempts[id]);
   });
 
   const daily = { ...(cloud.daily || {}) };
@@ -32,8 +56,7 @@ export function mergeProgress(localValue, cloudValue) {
     mockMap.set(`${item.at || ''}::${item.subject || ''}`, item);
   });
   const mockHistory = [...mockMap.values()]
-    .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0))
-    .slice(-100);
+    .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
 
   const localUpdated = new Date(local.updatedAt || 0).getTime();
   const cloudUpdated = new Date(cloud.updatedAt || 0).getTime();
@@ -42,6 +65,8 @@ export function mergeProgress(localValue, cloudValue) {
     : { ...(local.settings || {}), ...(cloud.settings || {}) };
 
   return {
+    ...cloud,
+    ...local,
     version: Math.max(Number(local.version || 1), Number(cloud.version || 1)),
     attempts,
     daily,
@@ -99,13 +124,18 @@ export async function createCloudSync({ getProgress, setProgress, onAuth, onStat
         .maybeSingle();
       if (readError) throw readError;
 
-      const merged = mergeProgress(getProgress(), data?.progress);
+      const localAtRead = JSON.stringify(getProgress());
+      const merged = mergeProgress(JSON.parse(localAtRead), data?.progress);
       const { error: writeError } = await client
         .from(TABLE_NAME)
         .upsert({ user_id: user.id, progress: merged, updated_at: merged.updatedAt }, { onConflict: 'user_id' });
       if (writeError) throw writeError;
 
-      setProgress(merged);
+      // Answers can be submitted while the upload is in flight. Reconcile
+      // against the live local state again before applying the response.
+      const live = getProgress();
+      if (JSON.stringify(live) !== localAtRead) rerunRequested = true;
+      setProgress(mergeProgress(live, merged));
       onStatus?.('synced');
     } catch (error) {
       console.error('Cloud sync failed:', error);

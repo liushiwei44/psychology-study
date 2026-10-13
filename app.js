@@ -1,8 +1,7 @@
-import { createCloudSync } from './supabase-sync.js';
-import { hasConfidenceReviewPending, normalizeLegacyReviewState, planReview } from './study-rules.mjs';
-
-const STORAGE_KEY = 'psychology-study-progress-v1';
-const SESSION_STORAGE_KEY = 'psychology-active-session-v1';
+import { createCloudSync } from './supabase-sync.js?v=20261013';
+import { normalizeLegacyReviewState, planReview } from './study-rules.mjs';
+import { buildQuestionIndex, buildPracticeQueue, questionId, isUsable, selectDueQuestions, selectNewQuestions } from './study-queues.mjs';
+import { STORAGE_KEY, SESSION_STORAGE_KEY, BACKUP_KEY, loadSavedProgress, exportSnapshot } from './progress-storage.mjs';
 const DAILY_DEFAULT = 50;
 const EXAM_DATE = new Date('2026-12-05T00:00:00');
 
@@ -41,8 +40,9 @@ function scrollToTop() {
 
 const state = {
   questions: [],
+  questionIndex: null,
   report: null,
-  progress: loadProgress(),
+  progress: null,
   view: 'dashboard',
   queue: [],
   queueIndex: 0,
@@ -64,19 +64,17 @@ const labels = {
 };
 
 function loadProgress() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-    if (saved && saved.version === 1) {
-      return {
-        ...saved,
-        attempts: saved.attempts || {},
-        daily: saved.daily || {},
-        mockHistory: saved.mockHistory || [],
-        settings: { dailyTarget: DAILY_DEFAULT, ...(saved.settings || {}) },
-        updatedAt: saved.updatedAt || new Date().toISOString(),
-      };
-    }
-  } catch (_) { /* use a clean local profile */ }
+  const saved = loadSavedProgress(localStorage);
+  if (saved) {
+    return {
+      ...saved,
+      attempts: saved.attempts || {},
+      daily: saved.daily || {},
+      mockHistory: saved.mockHistory || [],
+      settings: { dailyTarget: DAILY_DEFAULT, ...(saved.settings || {}) },
+      updatedAt: saved.updatedAt || new Date().toISOString(),
+    };
+  }
   return {
     version: 1,
     attempts: {},
@@ -89,7 +87,12 @@ function loadProgress() {
 
 function saveProgress() {
   state.progress.updatedAt = new Date().toISOString();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.progress));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.progress));
+  } catch (error) {
+    toastMessage('本机保存失败，请保留此页面并在学习统计中导出记录备份。');
+    throw error;
+  }
   cloudSync?.schedule();
   updateShellStats();
 }
@@ -197,10 +200,6 @@ function daysLeft() {
   return Math.max(0, Math.ceil((EXAM_DATE - new Date()) / 86400000));
 }
 
-function questionId(q) {
-  return `${q.source_file}::${q.source_question_no}`;
-}
-
 function getAttempt(q) {
   const id = questionId(q);
   const saved = state.progress.attempts[id] || {};
@@ -225,11 +224,6 @@ function getAttempt(q) {
 
 function isWrongBookEntry(attempt) {
   return attempt.wrong > 0 || attempt.flagged === true;
-}
-
-function isReviewCandidate(attempt) {
-  return isWrongBookEntry(attempt)
-    || hasConfidenceReviewPending(attempt);
 }
 
 function wrongBookReason(attempt) {
@@ -276,30 +270,28 @@ function currentQuestion() {
   return state.questions.find((q) => questionId(q) === state.queue[state.queueIndex]);
 }
 
-const HARD_PARSE_WARNINGS = new Set([
-  'missing_stem',
-  'missing_answer',
-  'too_few_options',
-  'option_count_not_4',
-  'duplicate_option_key',
-  'answer_refers_to_missing_option',
-]);
-
-function isUsable(q) {
-  return !(q.parse_warnings || []).some((warning) => HARD_PARSE_WARNINGS.has(warning));
-}
-
 function relevantQuestions() {
   return state.questions.filter((q) => isUsable(q) && (q.type === 'single' || q.type === 'multiple'));
 }
 
 function dueQuestions() {
-  const now = Date.now();
-  return state.questions.filter((q) => {
-    if (!isUsable(q)) return false;
-    const attempt = getAttempt(q);
-    return isReviewCandidate(attempt) && (!attempt.dueAt || new Date(attempt.dueAt).getTime() <= now) && attempt.status !== 'mastered';
-  });
+  return selectDueQuestions(state.questions, getAttempt);
+}
+
+function coreGroups() {
+  return state.questionIndex.groups.filter((group) => ['single', 'multiple'].includes(group[0].type));
+}
+
+function uniqueCoverage() {
+  const groups = coreGroups();
+  return { total: groups.length, covered: groups.filter((g) => g.some((q) => getAttempt(q).attempts > 0)).length };
+}
+
+function reviewStatus(attempt) {
+  if (attempt.status === 'mastered') return '已掌握';
+  if (attempt.lastCorrect === true && attempt.confidence === 'high') return '有把握 · 暂缓复习';
+  if (!attempt.dueAt) return '尚未安排';
+  return `下次 ${formatDate(attempt.dueAt)}`;
 }
 
 function dueWrongBookQuestions() {
@@ -321,6 +313,19 @@ function toastMessage(message) {
   toast.classList.add('show');
   window.clearTimeout(toastMessage.timer);
   toastMessage.timer = window.setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+function downloadProgress(upgradeOnly = false) {
+  const snapshot = exportSnapshot(localStorage);
+  if (state.progress && JSON.stringify(state.progress) !== snapshot.progress) snapshot.inMemoryProgress = state.progress;
+  const saved = upgradeOnly ? localStorage.getItem(BACKUP_KEY) : JSON.stringify(snapshot, null, 2);
+  if (!saved) { toastMessage('本机没有升级前记录；当前记录可用另一个按钮导出。'); return; }
+  const url = URL.createObjectURL(new Blob([saved], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `psychology-${upgradeOnly ? 'before-upgrade' : 'progress'}-${todayKey()}.json`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function startTimer(seconds) {
@@ -359,6 +364,7 @@ function render({ animate = true } = {}) {
 
 function renderDashboard() {
   const core = relevantQuestions();
+  const coverage = uniqueCoverage();
   const attempts = core.filter((q) => getAttempt(q).attempts > 0).length;
   const today = state.progress.daily[todayKey()] || { ids: [] };
   const target = state.progress.settings.dailyTarget || DAILY_DEFAULT;
@@ -391,10 +397,10 @@ function renderDashboard() {
     <div class="grid dashboard-grid">
       <article class="panel daily-card">
         <div><p class="kicker">Daily dispatch</p><h2>今日计划<br /><em>${todayDone} / ${target}</em> 已完成</h2></div>
-        <div class="daily-meta"><div class="progress-ring" style="--progress:${dailyProgress}%"><span>${dailyProgress}%</span></div><p><strong>${due} 道</strong>到期复习<br />完成后再去拿新的题。</p></div>
-        <div><button class="btn btn-primary" data-action="start-daily">开始今日刷题 →</button></div>
+        <div class="daily-meta"><div class="progress-ring" style="--progress:${dailyProgress}%"><span>${dailyProgress}%</span></div><p><strong>${due} 道</strong>到期复习<br />为待复习总量，每轮最多 10 道。</p></div>
+        <div><button class="btn btn-primary" data-action="start-daily">${todayDone >= target ? '再来一轮' : '开始今日刷题'} →</button><p class="stat-detail">每轮 ${target} 题，复习不足 10 道就少安排，其余做新题。每天可连续多轮。</p></div>
       </article>
-      <article class="panel card-pad stat-card"><span class="label">首刷覆盖 / core bank</span><div class="stat-number">${attempts.toLocaleString()}<small> / ${core.length.toLocaleString()}</small></div><div><p class="stat-detail">已覆盖 ${progress}% 核心客观题</p><div class="accent-line"></div></div></article>
+      <article class="panel card-pad stat-card"><span class="label">首刷覆盖 / core bank</span><div class="stat-number">${attempts.toLocaleString()}<small> / ${core.length.toLocaleString()}</small></div><div><p class="stat-detail">已覆盖 ${progress}% 原题 · 历史口径保留</p><p class="stat-detail">去重后还需 ${coverage.total - coverage.covered} 道新题</p><div class="accent-line"></div></div></article>
       <article class="panel card-pad stat-card"><span class="label">作答准确率 / all attempts</span><div class="stat-number">${accuracy}<small>%</small></div><div><p class="stat-detail">基于 ${totalAttempts.toLocaleString()} 次作答</p><div class="accent-line" style="background:var(--sage)"></div></div></article>
     </div>
 
@@ -435,23 +441,30 @@ function renderPracticeLauncher() {
   const due = dueQuestions().length;
   const target = state.progress.settings.dailyTarget || DAILY_DEFAULT;
   app.innerHTML = `
-    <section class="hero-row"><div><p class="kicker">Practice room / 02</p><h2 class="page-title">把答案留到<br /><em>提交之后。</em></h2><p class="hero-copy">首刷模式优先推送还没做过的单选和多选题。你可以放心猜，系统会把犹豫和错误都留下来。</p></div><div class="date-stamp"><strong>${target} 题</strong>今日首刷目标</div></section>
+    <section class="hero-row"><div><p class="kicker">Practice room / 02</p><h2 class="page-title">把答案留到<br /><em>提交之后。</em></h2><p class="hero-copy">首刷模式优先推送还没做过的单选和多选题。你可以放心猜，系统会把犹豫和错误都留下来。</p></div><div class="date-stamp"><strong>${target} 题</strong>今日练习目标</div></section>
     <div class="grid mock-grid">
-      <article class="panel mock-card"><span class="mock-badge">FIRST PASS / 首刷</span><h3>今日新题</h3><p>不看答案，完成一轮真实选择。提交后再读解析，错题会自动被收进复习队列。</p><div class="mock-meta"><div><strong>${target}</strong><span>今日目标</span></div><div><strong>${relevantQuestions().filter((q) => getAttempt(q).attempts === 0).length.toLocaleString()}</strong><span>尚未首刷</span></div></div><button class="btn btn-primary" data-action="start-daily">开始首刷 →</button></article>
-      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>把答错、蒙对和仍然模糊的题重新捞出来，同时优先保证新题首刷进度。</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>1·3·7</strong><span>复习间隔</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
+      <article class="panel mock-card"><span class="mock-badge">FIRST PASS / 首刷</span><h3>今日新题</h3><p>每轮最多 10 道到期复习，其余安排去重后的新题。达到今日目标仍可继续开下一轮。</p><div class="mock-meta"><div><strong>${target}</strong><span>今日目标</span></div><div><strong>${selectNewQuestions(state.questionIndex, getAttempt).length.toLocaleString()}</strong><span>去重后尚未首刷</span></div></div><button class="btn btn-primary" data-action="start-daily">开始首刷 →</button></article>
+      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>优先错题，其次蒙题，再看模糊题。已答对且有把握暂缓复习；没有到期题就直接做新题。</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>≤ 10</strong><span>每轮复习上限</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
     </div>
-    <div class="tip-box" style="margin-top:18px"><strong>首刷小规则</strong>答对且有把握暂不复习；蒙对 3 天后、模糊答对 7 天后各复查一次，再次答对便退出队列。答错题始终保留在错题本。判断题目前作为概念辨析，不计入正式模拟。</div>
+    <div class="tip-box" style="margin-top:18px"><strong>首刷小规则</strong>每日到期总量可以超过 10 道，但每轮最多安排 10 道。答对且有把握暂缓复习；蒙对 3 天后、模糊答对 7 天后复查。错题与蒙题历史一直保留。判断题目前作为概念辨析，不计入正式模拟。</div>
   `;
 }
 
 function renderPractice() {
   const q = currentQuestion();
   if (!q) { renderPracticeLauncher(); return; }
+  viewLabel.textContent = labels.practice;
   const total = state.queue.length;
   const index = state.queueIndex + 1;
   const attempt = getAttempt(q);
   const sessionLabel = state.session?.mode === 'mock' ? `${state.session.subject} · 模拟` : state.session?.mode === 'wrong' || state.session?.mode === 'wrong-book' ? '错题复习' : '今日首刷';
   const isMock = state.session?.mode === 'mock';
+  const reviewIds = state.session?.reviewIds;
+  const roundDetail = isMock ? '' : reviewIds
+    ? `本轮 ${reviewIds.length} 道复习 · ${total - reviewIds.length} 道新题`
+    : '已恢复升级前未完成的一轮；每轮最多 10 道复习从下一轮生效。';
+  const questionKind = !isMock && reviewIds ? (reviewIds.includes(questionId(q)) ? '复习' : '新题') : '';
+  const answerConflict = state.questionIndex.conflicts.some((group) => group.includes(q));
   const selectedAnswer = [...state.selected].sort().join('');
   const correctKeys = getCorrectKeys(q);
   const optionsHtml = q.options.map((option) => {
@@ -474,11 +487,13 @@ function renderPractice() {
   const explanation = state.submitted ? `<div class="explanation" role="status" aria-live="polite"><span class="answer-chip">正确答案 · ${escapeHtml(q.answer)}</span><h4>${result ? '这一题，稳稳拿下。' : '这道题先留下，下一轮再见。'}</h4><p>${escapeHtml(q.explanation || '这道题暂时没有解析，请在复习时补充自己的理解。')}</p></div>` : '';
 
   app.innerHTML = `
-    <div class="practice-top"><span class="session-tag">${escapeHtml(sessionLabel)} / ${typeShort(q.type)}</span><span class="session-progress">${index} / ${total}${isMock ? ` · <b id="session-timer">${formatSeconds(state.timerSeconds)}</b>` : ''}</span></div>
+    <div class="practice-top"><span class="session-tag">${escapeHtml(sessionLabel)} / ${typeShort(q.type)}${questionKind ? ` · ${questionKind}` : ''}</span><span class="session-progress">${index} / ${total}${isMock ? ` · <b id="session-timer">${formatSeconds(state.timerSeconds)}</b>` : ''}</span></div>
+    ${roundDetail ? `<p class="stat-detail">${roundDetail}</p>` : ''}
     <div class="question-layout">
       <article class="panel question-card">
         <span class="question-no">Q${String(q.source_question_no).padStart(4, '0')} · ${escapeHtml(q.source_file.replace('.pdf', ''))}</span>
         <h2 class="question-stem">${escapeHtml(q.stem)}</h2>
+        ${answerConflict ? '<p class="tip-box"><strong>待人工确认</strong>这道题与另一原题的选项一致、源答案不同。当前按本题原答案记录，核对结果前保留两题。</p>' : ''}
         <div class="options">${optionsHtml}</div>
         ${explanation}
         <div class="question-actions">
@@ -486,7 +501,7 @@ function renderPractice() {
           <div class="action-cluster">${!state.submitted ? `${isMock ? '<button class="btn btn-ghost" data-action="finish-mock">提前交卷</button>' : '<button class="btn btn-ghost" data-action="quit-session">退出</button>'}<button class="btn btn-primary" data-action="submit-answer" ${state.selected.size ? '' : 'disabled'}>提交答案 ↗</button>` : `${wrongBookButton}<button class="btn btn-primary" data-action="next-question">下一题 →</button>`}</div>
         </div>
       </article>
-      <aside class="side-stack"><div class="panel side-panel"><h4>这次作答</h4><div class="tiny-row"><span>选择</span><strong>${selectedAnswer || '—'}</strong></div><div class="tiny-row"><span>题型</span><strong>${typeShort(q.type)}</strong></div><div class="tiny-row"><span>历史作答</span><strong>${attempt.attempts} 次</strong></div><div class="tiny-row"><span>下次复习</span><strong>${formatDate(attempt.dueAt)}</strong></div></div><div class="tip-box"><strong>给自己留一行</strong>错题不是惩罚，是下一次检索记忆的入口。提交后可以在错题本里写下“我为什么会选错”。</div></aside>
+      <aside class="side-stack"><div class="panel side-panel"><h4>这次作答</h4><div class="tiny-row"><span>选择</span><strong>${selectedAnswer || '—'}</strong></div><div class="tiny-row"><span>题型</span><strong>${typeShort(q.type)}</strong></div><div class="tiny-row"><span>历史作答</span><strong>${attempt.attempts} 次</strong></div><div class="tiny-row"><span>下次复习</span><strong>${escapeHtml(reviewStatus(attempt))}</strong></div></div><div class="tip-box"><strong>给自己留一行</strong>错题不是惩罚，是下一次检索记忆的入口。提交后可以在错题本里写下“我为什么会选错”。</div></aside>
     </div>
   `;
 }
@@ -504,9 +519,9 @@ function renderWrong() {
   }).length;
   const dueCount = dueWrongBookQuestions().length;
   app.innerHTML = `
-    <section class="hero-row"><div><p class="kicker">Recovery room / 03</p><h2 class="page-title">错题会回来，<br /><em>你也会更稳。</em></h2><p class="hero-copy">这里收着答错和手动加入的题。一次做对不算离开，连续做对才会毕业。</p></div><div class="date-stamp"><strong>${activeWrongCount}</strong>道未掌握题</div></section>
-    <div class="toolbar"><select class="select-like" id="wrong-type-filter" aria-label="按题型筛选"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option></select><select class="select-like" id="wrong-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${dueCount ? `<button class="btn btn-primary" data-action="start-wrong-book">复习到期错题（${dueCount}）→</button>` : ''}</div>
-    <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number">Q${String(q.source_question_no).padStart(4, '0')}</span><div class="stem-mini">${escapeHtml(q.stem)}</div><small>${typeShort(q.type)} · ${wrongBookReason(a)}</small><span class="pill ${a.status === 'mastered' ? '' : 'warning'}">${a.status === 'mastered' ? '已掌握' : `下次 ${formatDate(a.dueAt)}`}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>答错或手动加入的题，会保留在这里。</p></div>'}</div>
+    <section class="hero-row"><div><p class="kicker">Recovery room / 03</p><h2 class="page-title">错题会回来，<br /><em>你也会更稳。</em></h2><p class="hero-copy">这里永久保留答错和手动加入的题，包括重复原题。答对且有把握的题暂缓自动复习，原状态和历史仍保留。</p></div><div class="date-stamp"><strong>${activeWrongCount}</strong>道未掌握题</div></section>
+    <div class="toolbar"><select class="select-like" id="wrong-type-filter" aria-label="按题型筛选"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option></select><select class="select-like" id="wrong-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${dueCount ? `<button class="btn btn-primary" data-action="start-wrong-book">复习到期错题（共 ${dueCount} 道，每轮最多 10 道）→</button>` : ''}</div>
+    <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number">Q${String(q.source_question_no).padStart(4, '0')}</span><div class="stem-mini">${escapeHtml(q.stem)}</div><small>${typeShort(q.type)} · ${wrongBookReason(a)}</small><span class="pill ${a.status === 'mastered' ? '' : 'warning'}">${escapeHtml(reviewStatus(a))}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>答错或手动加入的题，会保留在这里。</p></div>'}</div>
   `;
   document.querySelector('#wrong-type-filter').value = state.filters.wrongType;
   document.querySelector('#wrong-status-filter').value = state.filters.wrongStatus;
@@ -525,6 +540,8 @@ function renderMock() {
 
 function renderStats() {
   const allCore = relevantQuestions();
+  const coverage = uniqueCoverage();
+  const duplicateCount = allCore.length - coverage.total;
   const practiced = allCore.filter((q) => getAttempt(q).attempts > 0).length;
   const correct = allCore.reduce((sum, q) => sum + getAttempt(q).correct, 0);
   const total = allCore.reduce((sum, q) => sum + getAttempt(q).attempts, 0);
@@ -542,34 +559,42 @@ function renderStats() {
     <div class="grid stats-grid"><article class="panel radial-stat"><span class="label">CORE COVERAGE / 首刷覆盖</span><div class="big-percent">${allCore.length ? Math.round(practiced / allCore.length * 100) : 0}<small>%</small></div><h3>${practiced.toLocaleString()} 道已留下痕迹</h3></article><article class="panel radial-stat"><span class="label">ACCURACY / 作答准确率</span><div class="big-percent" style="color:var(--sage)">${accuracy}<small>%</small></div><h3>基于 ${total.toLocaleString()} 次作答</h3></article></div>
     <div class="section-heading"><h3>按题型看进度</h3><span class="label">MVP live data</span></div>
     <div class="panel bar-chart"><h3>每一种题型，都有自己的节奏</h3>${byType.map((x) => `<div class="bar"><span>${typeLabel(x.type)}</span><div class="bar-track"><span style="width:${Math.round(x.count / max * 100)}%;background:${x.type === 'multiple' ? 'var(--sage)' : x.type === 'judgment' ? 'var(--ink)' : 'var(--orange)'}"></span></div><em>${x.practiced}/${x.count}</em></div><div class="bar" style="margin-top:-5px"><span style="font-size:9px;color:#99a2a5">准确率</span><div class="bar-track" style="height:4px"><span style="width:${x.accuracy}%;background:#9aa6a5"></span></div><em>${x.accuracy}%</em></div>`).join('')}</div>
-    <div class="section-heading"><h3>本地数据</h3><span class="label">不会上传</span></div>
-    <div class="panel card-pad"><div class="tiny-row"><span>PDF 实际解析</span><strong>${state.questions.length.toLocaleString()}</strong></div><div class="tiny-row"><span>可进入练习</span><strong>${state.questions.filter(isUsable).length.toLocaleString()}</strong></div><div class="tiny-row"><span>待人工确认</span><strong>${state.report?.quality_issue_count || 0}</strong></div><div class="tiny-row"><span>当前错题</span><strong>${dueQuestions().length}</strong></div><div class="tiny-row"><span>模拟次数</span><strong>${(state.progress.mockHistory || []).length}</strong></div><div class="tiny-row"><span>今日目标</span><strong>${state.progress.settings.dailyTarget || DAILY_DEFAULT} 题</strong></div><div style="margin-top:18px"><label class="label" for="daily-target">调整每日首刷目标</label><div style="display:flex;gap:9px;margin-top:8px"><input id="daily-target" class="input-like" name="dailyTarget" type="number" inputmode="numeric" autocomplete="off" min="10" max="300" value="${state.progress.settings.dailyTarget || DAILY_DEFAULT}" /><button class="btn btn-ghost" data-action="save-target">保存目标</button></div></div><div style="margin-top:18px;padding-top:15px;border-top:1px solid var(--line)"><button class="btn btn-ghost" data-action="reset-progress">清空本机学习记录</button></div></div>
+    <div class="section-heading"><h3>本地数据</h3><span class="label">本机优先 · 登录后同步</span></div>
+    <div class="panel card-pad"><div class="tiny-row"><span>PDF 实际解析</span><strong>${state.questions.length.toLocaleString()}</strong></div><div class="tiny-row"><span>可进入练习</span><strong>${state.questions.filter(isUsable).length.toLocaleString()}</strong></div><div class="tiny-row"><span>待人工确认</span><strong>${state.report?.quality_issue_count || 0}</strong></div><div class="tiny-row"><span>当前到期复习总量</span><strong>${dueQuestions().length}</strong></div><div class="tiny-row"><span>模拟次数</span><strong>${(state.progress.mockHistory || []).length}</strong></div><div class="tiny-row"><span>今日目标 / 每轮题量</span><strong>${state.progress.settings.dailyTarget || DAILY_DEFAULT} 题</strong></div><div style="margin-top:18px"><label class="label" for="daily-target">调整每日目标 / 每轮题量（达到目标后仍可继续）</label><div style="display:flex;gap:9px;margin-top:8px"><input id="daily-target" class="input-like" name="dailyTarget" type="number" inputmode="numeric" autocomplete="off" min="10" max="300" value="${state.progress.settings.dailyTarget || DAILY_DEFAULT}" /><button class="btn btn-ghost" data-action="save-target">保存目标</button></div></div><div style="margin-top:18px;padding-top:15px;border-top:1px solid var(--line)"><button class="btn btn-primary" data-action="export-progress">导出学习记录备份</button> <button class="btn btn-ghost" data-action="export-upgrade-backup">导出升级前备份</button></div></div>
+    <div class="section-heading"><h3>题库去重核对</h3><a href="./data/duplicate_report.json" download>下载核对报告 ↗</a></div>
+    <div class="panel card-pad"><div class="tiny-row"><span>核心题可练原题</span><strong>${allCore.length}</strong></div><div class="tiny-row"><span>首刷过滤的确认重复副本</span><strong>${duplicateCount}</strong></div><div class="tiny-row"><span>去重后核心题覆盖</span><strong>${coverage.covered} / ${coverage.total}</strong></div><p class="stat-detail">题型、题干、选项及正确答案内容一致才合并首刷。同组任意原题已做过，就不再安排同组新题；所有原题的错题、蒙题与作答记录仍分别保留。</p><p class="stat-detail">同题干但选项不同的题继续保留，不按字面相似擅自删除。</p>${state.questionIndex.conflicts.map((group) => `<div class="tip-box"><strong>答案冲突 · 待人工确认</strong>${escapeHtml(group[0].stem)}<p>${group.map((q) => `${typeShort(q.type)} Q${q.source_question_no}：${q.answer}`).join('；')}。原题均保留，暂未合并。</p></div>`).join('')}</div>
     ${qualityIssues.length ? `<div class="section-heading"><h3>待人工确认的源题</h3><span class="label">不会静默修补</span></div><div class="panel card-pad">${qualityIssues.map((item) => `<div class="queue-item"><span class="queue-index">Q${String(item.source_question_no).padStart(4, '0')}</span><div class="queue-info"><strong>${escapeHtml(item.stem)}</strong><span>${typeLabel(item.type)} · ${escapeHtml(item.warnings.join('、'))}</span></div><span class="pill warning">暂不练习</span></div>`).join('')}</div>` : ''}
   `;
 }
 
 function buildDailyQueue() {
-  const target = state.progress.settings.dailyTarget || DAILY_DEFAULT;
-  const today = state.progress.daily[todayKey()] || { ids: [] };
-  const already = new Set(today.ids);
-  const untouched = relevantQuestions().filter((q) => !getAttempt(q).attempts && !already.has(questionId(q)));
-  const due = dueQuestions().filter((q) => !already.has(questionId(q)));
-  const pool = [...due.slice(0, Math.min(10, target)), ...untouched];
-  const unique = [...new Map(pool.map((q) => [questionId(q), q])).values()];
-  return unique.slice(0, target).map(questionId);
+  return buildPracticeQueue({
+    index: state.questionIndex, getAttempt, due: dueQuestions(),
+    todayIds: state.progress.daily[todayKey()]?.ids || [],
+    target: state.progress.settings.dailyTarget || DAILY_DEFAULT,
+  });
 }
 
 function buildWrongQueue() {
-  return dueQuestions().sort((a, b) => getAttempt(b).wrong - getAttempt(a).wrong).slice(0, state.progress.settings.dailyTarget || DAILY_DEFAULT).map(questionId);
+  return buildReviewQueue(dueQuestions());
 }
 
 function buildWrongBookQueue() {
-  return dueWrongBookQuestions().sort((a, b) => getAttempt(b).wrong - getAttempt(a).wrong).slice(0, state.progress.settings.dailyTarget || DAILY_DEFAULT).map(questionId);
+  return buildReviewQueue(dueWrongBookQuestions());
+}
+
+function buildReviewQueue(due) {
+  return buildPracticeQueue({
+    index: state.questionIndex, getAttempt, due, reviewOnly: true,
+    todayIds: state.progress.daily[todayKey()]?.ids || [],
+    target: state.progress.settings.dailyTarget || DAILY_DEFAULT,
+  });
 }
 
 function buildMockQueue() {
-  const singles = relevantQuestions().filter((q) => q.type === 'single');
-  const multiples = relevantQuestions().filter((q) => q.type === 'multiple');
+  const unique = coreGroups().map((group) => group[0]);
+  const singles = unique.filter((q) => q.type === 'single');
+  const multiples = unique.filter((q) => q.type === 'multiple');
   const take = (list, count) => list.slice().sort(() => Math.random() - 0.5).slice(0, count);
   return [...take(singles, 36), ...take(multiples, 24)].sort(() => Math.random() - 0.5).map(questionId);
 }
@@ -578,6 +603,12 @@ function startSession(mode, subject = '') {
   stopTimer();
   state.session = { mode, subject, startedAt: Date.now(), answers: {} };
   state.queue = mode === 'daily' ? buildDailyQueue() : mode === 'wrong' ? buildWrongQueue() : mode === 'wrong-book' ? buildWrongBookQueue() : buildMockQueue();
+  if ((mode === 'wrong' || mode === 'wrong-book') && state.queue.length
+      && !state.queue.some((id) => state.progress.attempts[id]?.attempts > 0)) {
+    state.session.mode = 'daily';
+    toastMessage('当前无需复习，已为你安排新题。');
+  }
+  state.session.reviewIds = state.queue.filter((id) => state.progress.attempts[id]?.attempts > 0);
   state.queueIndex = 0;
   state.selected = new Set();
   state.confidence = 'high';
@@ -617,14 +648,14 @@ function recordAnswer() {
     status: reviewPlan.status,
     dueAt: reviewPlan.dueAt,
     reviewPending: reviewPlan.reviewPending,
-    history: [...(previous.history || []), { at: now, answer: q.type === 'judgment' ? [...state.selected][0] || '' : [...state.selected].sort().join(''), correct, confidence: state.confidence }].slice(-12),
+    history: [...(previous.history || []), { at: now, answer: q.type === 'judgment' ? [...state.selected][0] || '' : [...state.selected].sort().join(''), correct, confidence: state.confidence }],
     updatedAt: now,
   };
   state.progress.attempts[id] = next;
   if (state.session?.mode === 'mock') {
     state.session.answers[id] = { answered: true, correct };
   }
-  if (state.session?.mode === 'daily') {
+  if (state.session?.mode !== 'mock') {
     const key = todayKey();
     state.progress.daily[key] ||= { ids: [] };
     if (!state.progress.daily[key].ids.includes(id)) state.progress.daily[key].ids.push(id);
@@ -706,6 +737,12 @@ function renderMockSummary(result) {
 }
 
 document.addEventListener('click', (event) => {
+  const backupAction = event.target.closest('[data-action]')?.dataset.action;
+  if (backupAction === 'export-progress' || backupAction === 'export-upgrade-backup') {
+    downloadProgress(backupAction === 'export-upgrade-backup');
+    return;
+  }
+  if (!state.progress || !state.questionIndex) return;
   const nav = event.target.closest('[data-view]');
   if (nav) {
     stopTimer();
@@ -753,13 +790,7 @@ document.addEventListener('click', (event) => {
   if (name === 'save-target') {
     const value = Math.max(10, Math.min(300, Number(document.querySelector('#daily-target')?.value || DAILY_DEFAULT)));
     state.progress.settings.dailyTarget = value;
-    saveProgress(); toastMessage(`每日首刷目标已设为 ${value} 题。`); render();
-  }
-  if (name === 'reset-progress') {
-    if (window.confirm('确定清空本机的作答、错题和模拟记录吗？题库文件不会被删除。')) {
-      state.progress = { version: 1, attempts: {}, daily: {}, mockHistory: [], settings: { dailyTarget: DAILY_DEFAULT } };
-      saveProgress(); toastMessage('学习记录已清空。'); render();
-    }
+    saveProgress(); toastMessage(`每日目标和每轮题量已设为 ${value} 题，复习仍最多 10 道。`); render();
   }
 });
 
@@ -806,11 +837,19 @@ authButton?.addEventListener('click', async () => {
 
 async function init() {
   try {
+    state.progress = loadProgress();
+  } catch (error) {
+    app.innerHTML = `<div class="panel empty-state"><h3>已暂停加载以保护学习记录</h3><p>${escapeHtml(error.message)}</p><p>原始记录未清空。请先导出备份，再检查浏览器存储空间或联系维护者。</p><button class="btn btn-primary" data-action="export-progress">导出原始记录</button></div>`;
+    return;
+  }
+  try {
     const [questionsResponse, reportResponse] = await Promise.all([fetch('./data/questions.json'), fetch('./data/import_report.json')]);
     state.questions = await questionsResponse.json();
+    state.questionIndex = buildQuestionIndex(state.questions);
     state.report = await reportResponse.json();
     if (restoreActiveSession()) {
       renderPractice();
+      updateShellStats();
       toastMessage('已恢复上次未完成的刷题进度。');
     } else render();
   } catch (error) {
