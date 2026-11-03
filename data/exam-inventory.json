@@ -1,0 +1,69 @@
+{
+  "auditedAt": "2026-11-03",
+  "originalParsed": 9488,
+  "originalByType": {
+    "single": 3996,
+    "judgment": 1494,
+    "multiple": 3998
+  },
+  "originalBlocked": 4,
+  "originalDuplicateCopies": 33,
+  "originalSameStemGroups": 280,
+  "originalSameStemVariants": 252,
+  "missingNumberLabels": {
+    "最新版【单选题+判断题】.pdf": [
+      344,
+      345,
+      346,
+      347,
+      5181,
+      5182,
+      5183,
+      5184,
+      5185,
+      5186
+    ],
+    "最新版【多选题】.pdf": [
+      3157,
+      3206
+    ]
+  },
+  "crossPageAnomalyCount": null,
+  "crossPageNote": "原导入报告未单独记录跨页异常计数，本次不重解析PDF；逐题结构异常4道继续隔离，未据此假定跨页异常为0。",
+  "originalHasIndependentCaseGroups": false,
+  "trainingTopicDistribution": {
+    "基础知识/基础心理": 3417,
+    "基础知识/发展心理": 1230,
+    "专业技能/咨询技能": 1632,
+    "专业技能/咨询方法": 421,
+    "专业技能/咨询伦理": 297,
+    "基础知识/心理健康与异常": 1282,
+    "专业技能/心理评估": 364,
+    "基础知识/社会心理": 622,
+    "基础知识/人格心理": 243,
+    "基础知识/心理健康与应激": 6,
+    "基础知识/心理测量基础": 6,
+    "专业技能/初始访谈": 6,
+    "专业技能/咨询关系与共情": 6,
+    "专业技能/认知行为方法": 6,
+    "专业技能/目标与方案": 6,
+    "专业技能/心理测验应用": 6,
+    "专业技能/胜任力与转介": 6,
+    "专业技能/行为方法": 6,
+    "专业技能/焦点解决方法": 6,
+    "专业技能/咨询伦理与记录": 6,
+    "专业技能/团体辅导": 6,
+    "专业技能/效果评估与结束": 6,
+    "专业技能/资料收集与整理": 6
+  },
+  "topicCaveat": "原PDF无官方知识点/科目标签；原题按关键词粗分，仅为训练参考，不是已核验的知识点分布。案例考点为自编标签。",
+  "authoredCaseGroups": 18,
+  "authoredByType": {
+    "基础知识/case_single": 30,
+    "基础知识/case_multiple": 6,
+    "专业技能/case_single": 60,
+    "专业技能/case_multiple": 12
+  },
+  "importReport": "import_report.json",
+  "duplicateReport": "duplicate_report.json"
+}

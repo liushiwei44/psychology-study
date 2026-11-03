@@ -35,8 +35,8 @@ jobs:
       - name: Prepare static site
         run: |
           mkdir -p dist/data
-          cp index.html styles.css app.js study-rules.mjs study-queues.mjs progress-storage.mjs config.js supabase-sync.js .nojekyll dist/
-          cp data/questions.json data/import_report.json data/duplicate_report.json dist/data/
+          cp index.html styles.css app.js study-rules.mjs study-queues.mjs progress-storage.mjs exam-engine.mjs config.js supabase-sync.js .nojekyll dist/
+          cp data/questions.json data/import_report.json data/duplicate_report.json data/case-exercises.json data/exam-templates.json data/exam-inventory.json dist/data/
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

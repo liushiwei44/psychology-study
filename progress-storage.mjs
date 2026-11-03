@@ -1,15 +1,17 @@
 export const STORAGE_KEY = 'psychology-study-progress-v1';
 export const SESSION_STORAGE_KEY = 'psychology-active-session-v1';
 export const BACKUP_KEY = 'psychology-study-backup-before-20261013';
+export const FEATURE_BACKUP_KEY = 'psychology-study-backup-before-20261103';
 
 export function backupBeforeUpgrade(storage) {
   const progress = storage.getItem(STORAGE_KEY);
   const activeSession = storage.getItem(SESSION_STORAGE_KEY);
-  if ((progress || activeSession) && !storage.getItem(BACKUP_KEY)) {
+  for (const key of [BACKUP_KEY, FEATURE_BACKUP_KEY]) {
+    if (!(progress || activeSession) || storage.getItem(key)) continue;
     const snapshot = JSON.stringify({ savedAt: new Date().toISOString(), progress, activeSession });
     // Fail before any progress write if storage is full or unavailable.
-    storage.setItem(BACKUP_KEY, snapshot);
-    if (storage.getItem(BACKUP_KEY) !== snapshot) throw new Error('升级前备份未能保存');
+    storage.setItem(key, snapshot);
+    if (storage.getItem(key) !== snapshot) throw new Error('升级前备份未能保存');
   }
 }
 
@@ -31,5 +33,6 @@ export function exportSnapshot(storage) {
     progress: storage.getItem(STORAGE_KEY),
     activeSession: storage.getItem(SESSION_STORAGE_KEY),
     beforeUpgrade: storage.getItem(BACKUP_KEY),
+    beforeSpecialtyUpgrade: storage.getItem(FEATURE_BACKUP_KEY),
   };
 }

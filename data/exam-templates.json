@@ -1,0 +1,25 @@
+{
+  "updatedAt": "2026-11-03",
+  "provenance": "用户于2026-11-03提供的初级考试题型截图",
+  "officiallyVerified": false,
+  "notice": "按用户截图配置的训练模板，尚未在可访问的官方大纲中独立核实题量及分值；最终以官方通知和准考证为准。案例为自编训练，非官方真题；原PDF题目按关键词作训练分科，非官方标签。题池有限，套卷之间可能复用相同案例及原题，同题仍使用同一记录ID。",
+  "sources": [
+    {"title":"考试官网：考试大纲及参考资料","url":"https://www.cert-camh.org.cn/#/article?key=kszx&activeIndex=3"},
+    {"title":"基础知识考试大纲（官网链接）","url":"https://lvluo.cn-bj.ufileos.com/credential/ogp2bs5c6p83s8cqjh9t4w8zvjfz5wzu.pdf"},
+    {"title":"操作技能（初级）考试大纲（官网链接）","url":"https://lvluo.cn-bj.ufileos.com/credential/nst2kwnq4hbngzarwzpqmw2qpxqfiycp.pdf"},
+    {"title":"官网公开课：初级案例解析、命题逻辑与综合案例研讨","url":"https://www.cert-camh.org.cn/#/home"}
+  ],
+  "templates": [
+    {"id":"basic-screenshot-v1","subject":"基础知识","seed":20261205,"minutes":120,"passScore":60,"sets":3,"sections":[
+      {"label":"单句型单选","type":"single","count":50,"points":1,"rule":"exact"},
+      {"label":"案例摘要单选","type":"case_single","count":25,"points":1,"rule":"exact"},
+      {"label":"多项选择","type":"multiple","count":15,"points":1,"rule":"multiple-partial"},
+      {"label":"案例分析（不定项）","type":"case_multiple","count":5,"points":2,"rule":"exact"}
+    ]},
+    {"id":"skills-screenshot-v1","subject":"专业技能","seed":20261206,"minutes":120,"passScore":60,"sets":3,"sections":[
+      {"label":"案例摘要单选","type":"case_single","count":50,"points":1,"rule":"exact"},
+      {"label":"多项选择","type":"multiple","count":30,"points":1,"rule":"multiple-partial"},
+      {"label":"案例分析（不定项）","type":"case_multiple","count":10,"points":2,"rule":"exact"}
+    ]}
+  ]
+}

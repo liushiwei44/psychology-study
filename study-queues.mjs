@@ -21,7 +21,7 @@ export function normalizeDuplicateText(value = '') {
 }
 
 function signatures(q) {
-  const stem = normalizeDuplicateText(q.stem);
+  const stem = normalizeDuplicateText(`${q.case_material || ''} ${q.stem}`);
   // Labels/order can carry meaning in “A 和 B” / “以上各项” options.
   const orderMatters = [q.stem, ...q.options.map((o) => o.text)]
     .some((text) => /以上|上述|下述|[A-DＡ-Ｄ]/.test(text));
