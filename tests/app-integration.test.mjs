@@ -16,7 +16,12 @@ const { STORAGE_KEY, SESSION_STORAGE_KEY, BACKUP_KEY } = storageRules;
 const date = (n) => new Date(Date.UTC(2026, 8, n)).toISOString();
 const history = Array.from({ length: 15 }, (_, i) => ({ at: date(i + 1), answer: 'A', correct: false, confidence: 'low' }));
 
-async function loadApp(saved, active = null, { failProgressSave = false, existingBackup = null } = {}) {
+async function loadApp(saved, active = null, { failProgressSave = false, existingBackup = null, nowMs = null } = {}) {
+  let clockNow = nowMs;
+  class ClockDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clockNow])); }
+    static now() { return clockNow; }
+  }
   const memory = new Map([[STORAGE_KEY, JSON.stringify(saved)]]);
   if (active) memory.set(SESSION_STORAGE_KEY, JSON.stringify(active));
   if (existingBackup) memory.set(BACKUP_KEY, existingBackup);
@@ -24,13 +29,18 @@ async function loadApp(saved, active = null, { failProgressSave = false, existin
   const element = () => ({ innerHTML: '', textContent: '', dataset: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, setAttribute() {}, addEventListener() {}, value: '' });
   const document = { querySelector: (key) => { if (!elements.has(key)) elements.set(key, element()); return elements.get(key); }, querySelectorAll: () => [], addEventListener() {}, body: element(), documentElement: {} };
   const localStorage = { getItem: (key) => memory.get(key) ?? null, setItem: (key, value) => { if (failProgressSave && key === STORAGE_KEY) throw new Error('QuotaExceeded'); memory.set(key, value); }, removeItem: (key) => memory.delete(key) };
-  const context = vm.createContext({ ...queues, ...rules, ...storageRules, ...exams, console, document, localStorage, window: { setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {}, addEventListener() {}, scrollTo() {} },
+  const context = vm.createContext({ ...queues, ...rules, ...storageRules, ...exams, ...(nowMs === null ? {} : {
+    Date: ClockDate,
+    planReview: (previous, options) => rules.planReview(previous, { ...options, nowMs: clockNow }),
+    isDueForReview: (attempt) => queues.isDueForReview(attempt, clockNow),
+    selectDueQuestions: (items, getAttempt) => queues.selectDueQuestions(items, getAttempt, clockNow),
+  }), console, document, localStorage, window: { setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {}, addEventListener() {}, scrollTo() {} },
     fetch: async (url) => ({ json: async () => structuredClone(url.includes('questions.json') ? questions : url.includes('case-exercises') ? caseBank : url.includes('exam-templates') ? examConfig : report) }),
     createCloudSync: async () => ({ configured: false, schedule() {} }),
   });
   vm.runInContext(appSource.replace(/init\(\);\s*$/, 'globalThis.ready = init();'), context);
   await context.ready;
-  return { context, memory, run: (code) => vm.runInContext(code, context), html: () => elements.get('#app-view').innerHTML };
+  return { context, memory, run: (code) => vm.runInContext(code, context), html: () => elements.get('#app-view').innerHTML, setNow: (value) => { clockNow = value; } };
 }
 
 const base = () => ({ version: 1, attempts: {}, daily: {}, mockHistory: [{ at: date(1), score: 70 }], settings: { dailyTarget: 50 }, updatedAt: date(15) });
@@ -98,6 +108,62 @@ test('specialties append to the same totals and permanent wrong book without cha
   assert.deepEqual(result.mockHistory, saved.mockHistory);
   app.run('renderStats()');
   assert.match(app.html(), /3104/);
+});
+
+test('wrong answers from every specialty join the front of daily practice at 24 hours, without changing an open round', async () => {
+  const now = Date.parse('2026-11-04T02:00:00Z');
+  const app = await loadApp(base(), null, { nowMs: now });
+  const ids = [];
+  for (const type of ['single', 'multiple', 'judgment', 'case_single', 'case_multiple']) {
+    app.run(`startSession('specialty', '', { type: '${type}' });
+      state.selected = new Set([currentQuestion().options[0].key]);
+      if (isCorrect(currentQuestion(), state.selected)) state.selected = new Set([currentQuestion().options[1].key]);
+      recordAnswer();`);
+    ids.push(app.run('questionId(currentQuestion())'));
+    assert.equal(app.run('getAttempt(currentQuestion()).wrong'), 1);
+    assert.equal(Date.parse(app.run('getAttempt(currentQuestion()).dueAt')), now + 86400000);
+    assert.match(app.run('reviewStatus(getAttempt(currentQuestion()))'), /下次.*\d{2}:\d{2}/);
+  }
+  app.setNow(now + 86400000 - 1);
+  assert.equal(app.run('dueQuestions().length'), 0);
+  app.run(`startSession('daily');`);
+  const active = JSON.parse(app.memory.get(SESSION_STORAGE_KEY));
+  const saved = JSON.parse(app.memory.get(STORAGE_KEY));
+  assert.equal(app.run('state.session.reviewIds.length'), 0);
+  const restored = await loadApp(saved, active, { nowMs: now + 86400000 });
+  assert.deepEqual(Array.from(restored.run('state.queue')), active.queue);
+  assert.equal(restored.run('state.session.reviewIds.length'), 0);
+  restored.run(`startSession('daily');`);
+  assert.equal(restored.run('state.queue.length'), 50);
+  assert.deepEqual(Array.from(restored.run('state.queue.slice(0, 5)')).sort(), ids.slice().sort());
+  assert.equal(restored.run('state.session.reviewIds.length'), 5);
+  assert.equal(restored.run('state.queue.slice(5).every((id) => !state.progress.attempts[id]?.attempts)'), true);
+  assert.match(restored.run('reviewStatus(getAttempt(currentQuestion()))'), /已到期/);
+  restored.run('renderDashboard();');
+  assert.match(restored.html(), /判断 1 道/);
+  assert.match(restored.html(), /多选 1 道/);
+  assert.deepEqual(JSON.parse(restored.memory.get(STORAGE_KEY)), saved);
+});
+
+test('same source number in single and multiple remains two records; references show type and original number', async () => {
+  const single = questions.find((q) => q.type === 'single' && q.source_question_no === 1);
+  const multiple = questions.find((q) => q.type === 'multiple' && q.source_question_no === 1);
+  const judgment = questions.find((q) => q.type === 'judgment' && q.source_question_no === 4001);
+  const saved = base();
+  for (const q of [single, multiple, judgment]) saved.attempts[queues.questionId(q)] = { attempts: 1, correct: 0, wrong: 1, lastCorrect: false, confidence: 'high', dueAt: date(1), status: 'new', history: [history[0]] };
+  const app = await loadApp(saved);
+  assert.notEqual(queues.questionId(single), queues.questionId(multiple));
+  assert.equal(app.run('questionReference(state.questions.find((q) => q.type === "single" && q.source_question_no === 1))'), '单选 · 原题号 1');
+  assert.equal(app.run('questionReference(state.questions.find((q) => q.type === "multiple" && q.source_question_no === 1))'), '多选 · 原题号 1');
+  assert.equal(app.run('questionReference(state.questions.find((q) => q.type === "judgment" && q.source_question_no === 4001))'), '判断 · 原题号 4001');
+  app.run('startSession("daily");');
+  assert.match(app.html(), /本轮 1 \/ 50 题/);
+  assert.match(app.html(), /单选 · 原题号 1/);
+  assert.match(app.html(), /来源：最新版【单选题\+判断题】\.pdf/);
+  app.run('renderWrong();');
+  assert.match(app.html(), /最新版【多选题】\.pdf/);
+  assert.match(app.html(), /原题 4001/);
+  assert.deepEqual(JSON.parse(app.memory.get(STORAGE_KEY)), saved);
 });
 
 test('new mocks hide answers and history until hand-in, then retain partial scores and all attempts exactly once', async () => {

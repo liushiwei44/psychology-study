@@ -1,6 +1,6 @@
 import { createCloudSync } from './supabase-sync.js?v=20261013';
 import { normalizeLegacyReviewState, planReview } from './study-rules.mjs';
-import { buildQuestionIndex, buildPracticeQueue, questionId, isUsable, selectDueQuestions, selectNewQuestions } from './study-queues.mjs?v=20261103a';
+import { buildQuestionIndex, buildPracticeQueue, questionId, isUsable, isDueForReview, selectDueQuestions, selectNewQuestions } from './study-queues.mjs?v=20261103a';
 import { STORAGE_KEY, SESSION_STORAGE_KEY, BACKUP_KEY, FEATURE_BACKUP_KEY, loadSavedProgress, exportSnapshot } from './progress-storage.mjs?v=20261103a';
 import { PRACTICE_TYPES, flattenCases, selectSpecialtyQuestions, buildExamPaper, gradeExam } from './exam-engine.mjs?v=20261103a';
 const DAILY_DEFAULT = 50;
@@ -241,9 +241,24 @@ function typeShort(type) {
   return ({ single: '单选', multiple: '多选', judgment: '判断', case_single: '案例单选', case_multiple: '案例不定项' })[type] || type;
 }
 
+function questionReference(q) {
+  return `${typeShort(q.type)} · ${q.case_id ? '案例题号' : '原题号'} ${q.source_question_no}`;
+}
+
+function reviewTypeSummary(questions) {
+  return PRACTICE_TYPES.map((type) => {
+    const count = questions.filter((q) => q.type === type).length;
+    return count ? `${typeShort(type)} ${count} 道` : '';
+  }).filter(Boolean).join(' · ') || '暂无到期题';
+}
+
 function formatDate(value) {
   if (!value) return '尚未安排';
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(value));
+}
+
+function formatReviewTime(value) {
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));
 }
 
 function formatSeconds(seconds) {
@@ -292,8 +307,9 @@ function uniqueCoverage() {
 function reviewStatus(attempt) {
   if (attempt.status === 'mastered') return '已掌握';
   if (attempt.lastCorrect === true && attempt.confidence === 'high') return '有把握 · 暂缓复习';
+  if (isDueForReview(attempt)) return attempt.dueAt ? `已到期 · ${formatReviewTime(attempt.dueAt)}` : '已到期';
   if (!attempt.dueAt) return '尚未安排';
-  return `下次 ${formatDate(attempt.dueAt)}`;
+  return `下次 ${formatReviewTime(attempt.dueAt)}`;
 }
 
 function dueWrongBookQuestions() {
@@ -371,7 +387,8 @@ function renderDashboard() {
   const today = state.progress.daily[todayKey()] || { ids: [] };
   const target = state.progress.settings.dailyTarget || DAILY_DEFAULT;
   const todayDone = today.ids.length;
-  const due = dueQuestions().length;
+  const dueList = dueQuestions();
+  const due = dueList.length;
   const correct = Object.values(state.progress.attempts).reduce((sum, a) => sum + (a.correct || 0), 0);
   const totalAttempts = Object.values(state.progress.attempts).reduce((sum, a) => sum + (a.attempts || 0), 0);
   const accuracy = totalAttempts ? Math.round((correct / totalAttempts) * 100) : 0;
@@ -400,7 +417,7 @@ function renderDashboard() {
       <article class="panel daily-card">
         <div><p class="kicker">Daily dispatch</p><h2>今日计划<br /><em>${todayDone} / ${target}</em> 已完成</h2></div>
         <div class="daily-meta"><div class="progress-ring" style="--progress:${dailyProgress}%"><span>${dailyProgress}%</span></div><p><strong>${due} 道</strong>到期复习<br />为待复习总量，每轮最多 10 道。</p></div>
-        <div><button class="btn btn-primary" data-action="start-daily">${todayDone >= target ? '再来一轮' : '开始今日刷题'} →</button><p class="stat-detail">每轮 ${target} 题，复习不足 10 道就少安排，其余做新题。每天可连续多轮。</p></div>
+        <div><button class="btn btn-primary" data-action="start-daily">${todayDone >= target ? '再来一轮' : '开始今日刷题'} →</button><p class="stat-detail">每轮 ${target} 题，开头合计最多 10 道到期复习，汇总所有专项题型，其余做新题。每天可连续多轮。</p><p class="stat-detail">到期分布：${reviewTypeSummary(dueList)}</p></div>
       </article>
       <article class="panel card-pad stat-card"><span class="label">首刷覆盖 / core bank</span><div class="stat-number">${attempts.toLocaleString()}<small> / ${core.length.toLocaleString()}</small></div><div><p class="stat-detail">已覆盖 ${progress}% 原题 · 历史口径保留</p><p class="stat-detail">去重后还需 ${coverage.total - coverage.covered} 道新题</p><div class="accent-line"></div></div></article>
       <article class="panel card-pad stat-card"><span class="label">作答准确率 / all attempts</span><div class="stat-number">${accuracy}<small>%</small></div><div><p class="stat-detail">基于 ${totalAttempts.toLocaleString()} 次作答</p><p class="stat-detail">全部题型累计已做 ${Object.values(state.progress.attempts).filter((a) => a.attempts > 0).length.toLocaleString()} 题 · 含案例与判断</p><div class="accent-line" style="background:var(--sage)"></div></div></article>
@@ -436,13 +453,14 @@ function recentQueueHtml() {
     .map(([id, a], index) => {
       const q = state.questions.find((item) => questionId(item) === id);
       if (!q) return '';
-      return `<div class="queue-item"><span class="queue-index">0${index + 1}</span><div class="queue-info"><strong>${escapeHtml(q.stem)}</strong><span>${typeLabel(q.type)} · ${a.lastCorrect ? '已答对' : '待复习'}</span></div><span class="pill ${a.lastCorrect ? '' : 'warning'}">${a.lastCorrect ? 'OK' : '复习'}</span></div>`;
+      return `<div class="queue-item"><span class="queue-index">0${index + 1}</span><div class="queue-info"><strong>${escapeHtml(q.stem)}</strong><span>${escapeHtml(questionReference(q))} · ${a.lastCorrect ? '已答对' : '待复习'}</span></div><span class="pill ${a.lastCorrect ? '' : 'warning'}">${a.lastCorrect ? 'OK' : '复习'}</span></div>`;
     }).join('');
   return recent || '<div class="empty-state" style="padding:30px"><div class="empty-symbol">○</div><p>还没有作答记录，今天从第一题开始。</p></div>';
 }
 
 function renderPracticeLauncher() {
-  const due = dueQuestions().length;
+  const dueList = dueQuestions();
+  const due = dueList.length;
   const target = state.progress.settings.dailyTarget || DAILY_DEFAULT;
   app.innerHTML = `
     <section class="hero-row"><div><p class="kicker">Practice room / 02</p><h2 class="page-title">换一种题型，<br /><em>继续向前。</em></h2><p class="hero-copy">直接选择多选、案例单选或不定项。每次新作答都计入总进度，错题和把握程度继续积累。</p></div><div class="date-stamp"><strong>${target} 题</strong>每轮新题上限</div></section>
@@ -450,9 +468,9 @@ function renderPracticeLauncher() {
     <div class="section-heading"><h3>继续综合首刷与复习</h3></div>
     <div class="grid mock-grid">
       <article class="panel mock-card"><span class="mock-badge">FIRST PASS / 首刷</span><h3>今日新题</h3><p>每轮最多 10 道到期复习，其余安排去重后的新题。达到今日目标仍可继续开下一轮。</p><div class="mock-meta"><div><strong>${target}</strong><span>今日目标</span></div><div><strong>${selectNewQuestions(state.questionIndex, getAttempt).length.toLocaleString()}</strong><span>去重后尚未首刷</span></div></div><button class="btn btn-primary" data-action="start-daily">开始首刷 →</button></article>
-      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>优先错题，其次蒙题，再看模糊题。已答对且有把握暂缓复习；没有到期题就直接做新题。</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>≤ 10</strong><span>每轮复习上限</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
+      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>汇总单选、多选、判断和案例专项的到期题，合计每轮最多10道。优先错题，其次蒙题、模糊题；有把握答对暂缓复习。</p><p class="stat-detail">${reviewTypeSummary(dueList)}</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>≤ 10</strong><span>每轮复习上限</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
     </div>
-    <div class="tip-box" style="margin-top:18px"><strong>首刷小规则</strong>每日到期总量可以超过 10 道，但每轮最多安排 10 道。答对且有把握暂缓复习；蒙对 3 天后、模糊答对 7 天后复查。错题与蒙题历史一直保留。判断题目前作为概念辨析，不计入正式模拟。</div>
+    <div class="tip-box" style="margin-top:18px"><strong>统一复习规则</strong>各专项错题答错后24小时到期；蒙对3天后、模糊答对7天后复查。到期后进入新开一轮的前面，所有题型合计最多10道；已开始的一轮保持原顺序。判断题可进入日常复习，不计入两科模拟。</div>
   `;
 }
 
@@ -511,11 +529,11 @@ function renderPractice() {
   const explanation = reveal ? `<div class="explanation" role="status" aria-live="polite"><span class="answer-chip">正确答案 · ${escapeHtml(q.answer)}</span><h4>${result ? '这一题，稳稳拿下。' : '这道题先留下，下一轮再见。'}</h4><p>${escapeHtml(q.explanation || '这道题暂时没有解析，请在复习时补充自己的理解。')}</p></div>` : '';
 
   app.innerHTML = `
-    <div class="practice-top"><span class="session-tag">${escapeHtml(sessionLabel)} / ${typeShort(q.type)}${questionKind ? ` · ${questionKind}` : ''}</span><span class="session-progress">${index} / ${total}${isMock ? ` · <b id="session-timer">${formatSeconds(state.timerSeconds)}</b>` : ''}</span></div>
+    <div class="practice-top"><span class="session-tag">${escapeHtml(sessionLabel)} / ${typeShort(q.type)}${questionKind ? ` · ${questionKind}` : ''}</span><span class="session-progress">${isMock ? '本卷' : '本轮'} ${index} / ${total} 题${isMock ? ` · <b id="session-timer">${formatSeconds(state.timerSeconds)}</b>` : ''}</span></div>
     ${roundDetail ? `<p class="stat-detail">${roundDetail}</p>` : ''}
     <div class="question-layout">
       <article class="panel question-card">
-        <span class="question-no">Q${String(q.source_question_no).padStart(4, '0')} · ${escapeHtml(q.source_file.replace('.pdf', ''))}</span>
+        <span class="question-no">${escapeHtml(questionReference(q))}</span><p class="question-source">来源：${escapeHtml(q.source_file)}</p>
         ${q.case_material ? `<section class="case-material" aria-label="案例材料"><span class="label">${escapeHtml(q.subject)} · ${escapeHtml(q.topic)} · 自编训练</span><h3>${escapeHtml(q.case_title)}</h3><p>${escapeHtml(q.case_material)}</p></section>` : ''}
         <h2 class="question-stem">${escapeHtml(q.stem)}</h2>
         <p class="stat-detail">${['single', 'case_single'].includes(q.type) ? '请选择一个最佳答案。' : q.type === 'case_multiple' ? '不定项：可能有一个或多个正确选项；全对得分，漏选、多选、错选均不得分。' : q.type === 'multiple' ? `请选择全部正确选项。${isMock && state.session.paper ? '本卷全对1分，漏选0.5分，错选0分。' : '日常练习全选对才记正确，漏选也进入错题本。'}` : '请选择正确或错误。'}</p>
@@ -547,7 +565,8 @@ function renderWrong() {
   app.innerHTML = `
     <section class="hero-row"><div><p class="kicker">Recovery room / 03</p><h2 class="page-title">错题会回来，<br /><em>你也会更稳。</em></h2><p class="hero-copy">这里永久保留答错和手动加入的题，包括重复原题。答对且有把握的题暂缓自动复习，原状态和历史仍保留。</p></div><div class="date-stamp"><strong>${activeWrongCount}</strong>道未掌握题</div></section>
     <div class="toolbar"><select class="select-like" id="wrong-type-filter" aria-label="按题型筛选"><option value="all">全部题型</option><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option><option value="case_single">案例摘要单选</option><option value="case_multiple">案例分析（不定项）</option></select><select class="select-like" id="wrong-status-filter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="new">待复习</option><option value="reviewing">复习中</option><option value="mastered">已掌握</option></select>${dueCount ? `<button class="btn btn-primary" data-action="start-wrong-book">复习到期错题（共 ${dueCount} 道，每轮最多 10 道）→</button>` : ''}</div>
-    <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number">Q${String(q.source_question_no).padStart(4, '0')}</span><div class="stem-mini">${escapeHtml(q.stem)}</div><small>${typeShort(q.type)} · ${wrongBookReason(a)}</small><span class="pill ${a.status === 'mastered' ? '' : 'warning'}">${escapeHtml(reviewStatus(a))}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>答错或手动加入的题，会保留在这里。</p></div>'}</div>
+    <div class="tip-box" style="margin-bottom:18px"><strong>题号怎么看</strong>单选和多选各自从1编号，判断题沿用原PDF的4001起始号；“本轮”是本次练习的位置。请结合题型与来源核对，同号的单选和多选分别记录。</div>
+    <div class="panel">${wrong.length ? wrong.map((q) => { const a = getAttempt(q); return `<div class="wrong-row"><span class="number" title="${escapeHtml(questionReference(q))}"><span>${typeShort(q.type)}</span><strong>${q.case_id ? '案例' : '原题'} ${escapeHtml(q.source_question_no)}</strong></span><div class="stem-mini" title="${escapeHtml(q.stem)}">${escapeHtml(q.stem)}<span class="question-source">来源：${escapeHtml(q.source_file)}</span></div><small>${wrongBookReason(a)}</small><span class="pill ${a.status === 'mastered' ? '' : 'warning'}">${escapeHtml(reviewStatus(a))}</span></div>`; }).join('') : '<div class="empty-state"><div class="empty-symbol">✓</div><h3>错题本还是空的</h3><p>答错或手动加入的题，会保留在这里。</p></div>'}</div>
   `;
   document.querySelector('#wrong-type-filter').value = state.filters.wrongType;
   document.querySelector('#wrong-status-filter').value = state.filters.wrongStatus;
@@ -814,7 +833,7 @@ function renderMockSummary(result) {
     ${result.rows ? `<div class="section-heading"><h3>逐题答案与解析</h3><span class="label">全部${result.rows.length}题已保留</span></div><div class="panel card-pad">${result.rows.map((row, i) => {
       const q = state.questions.find((item) => questionId(item) === row.id);
       if (!q) return '';
-      return `<details class="answer-review"><summary>${i + 1}. ${row.correct ? '✓' : row.answered ? '需复习' : '未作答'} · ${row.score}/${row.points}分 · ${escapeHtml(q.stem)}</summary>${q.case_material ? `<div class="case-material"><h4>${escapeHtml(q.case_title)}</h4><p>${escapeHtml(q.case_material)}</p></div>` : ''}<p>${q.options.map((o) => `${escapeHtml(o.key)}. ${escapeHtml(o.text)}`).join('<br>')}</p><p>你的答案：${escapeHtml(row.answer.join('') || '未作答')} · 正确答案：${escapeHtml(q.answer)}</p><p>${escapeHtml(q.explanation || '原题暂无解析。')}</p><small>${escapeHtml(q.source_file)} · Q${escapeHtml(q.source_question_no)}</small></details>`;
+      return `<details class="answer-review"><summary>${i + 1}. ${row.correct ? '✓' : row.answered ? '需复习' : '未作答'} · ${row.score}/${row.points}分 · ${escapeHtml(q.stem)}</summary>${q.case_material ? `<div class="case-material"><h4>${escapeHtml(q.case_title)}</h4><p>${escapeHtml(q.case_material)}</p></div>` : ''}<p>${q.options.map((o) => `${escapeHtml(o.key)}. ${escapeHtml(o.text)}`).join('<br>')}</p><p>你的答案：${escapeHtml(row.answer.join('') || '未作答')} · 正确答案：${escapeHtml(q.answer)}</p><p>${escapeHtml(q.explanation || '原题暂无解析。')}</p><small>${escapeHtml(questionReference(q))} · ${escapeHtml(q.source_file)}</small></details>`;
     }).join('')}</div>` : ''}`;
 }
 

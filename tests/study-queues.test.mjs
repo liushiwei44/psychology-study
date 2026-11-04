@@ -44,6 +44,25 @@ test('few/no due reviews leave the rest of the round to new questions; review en
   assert.deepEqual(buildPracticeQueue({ index, getAttempt: () => wrong, due: [] }), []);
 });
 
+test('daily review limit is shared across all five types, and review IDs are a contiguous prefix', () => {
+  const types = ['single', 'multiple', 'judgment', 'case_single', 'case_multiple'];
+  const old = Array.from({ length: 25 }, (_, n) => make(n + 1, { type: types[n % types.length] }));
+  const fresh = Array.from({ length: 60 }, (_, n) => make(100 + n));
+  const questions = [...old, ...fresh];
+  const index = buildQuestionIndex(questions);
+  const attempts = Object.fromEntries(old.map((q) => [questionId(q), { ...wrong }]));
+  const before = structuredClone(attempts);
+  const getAttempt = (q) => attempts[questionId(q)] || {};
+  const due = selectDueQuestions(questions, getAttempt, NOW);
+  for (const reviewOnly of [false, true]) {
+    const queue = buildPracticeQueue({ index, getAttempt, due, reviewOnly });
+    assert.deepEqual(queue.slice(0, 10), old.slice(0, 10).map(questionId));
+    assert.equal(queue.length, reviewOnly ? 10 : 50);
+    if (!reviewOnly) assert.ok(queue.slice(10).every((id) => !attempts[id]));
+  }
+  assert.deepEqual(attempts, before);
+});
+
 test('wrong then guessed then uncertain; confident corrected items pause without mutation', () => {
   const questions = Array.from({ length: 6 }, (_, i) => make(i));
   const values = [

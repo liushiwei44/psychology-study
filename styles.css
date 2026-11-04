@@ -189,8 +189,8 @@ button { cursor: pointer; }
 .session-progress { font: 10px var(--mono); color: #7b898e; }
 .question-layout { display: grid; grid-template-columns: minmax(0, 1fr) 238px; gap: 14px; align-items: start; }
 .question-card { padding: clamp(22px, 2.5vw, 32px); min-height: 0; position: relative; }
-.question-card::before { content: 'Q'; position: absolute; right: 24px; top: 17px; font: 500 78px/.8 var(--display); color: rgba(23,34,47,.045); }
 .question-no { font: 11px var(--mono); color: var(--orange); }
+.question-source { display: block; margin: 5px 0 0; font-size: 11px; line-height: 1.6; color: var(--ink-soft); overflow-wrap: anywhere; }
 .question-stem { max-width: 760px; margin: 18px 0 20px; font: 500 clamp(21px, 1.85vw, 27px)/1.38 var(--display); letter-spacing: -.01em; }
 .options { display: grid; gap: 8px; }
 .option { display: flex; align-items: flex-start; gap: 11px; width: 100%; padding: 11px 14px; background: transparent; border: 1px solid var(--line); border-radius: var(--radius-sm); text-align: left; color: var(--ink); transition: border-color .16s ease, background-color .16s ease, color .16s ease; }
@@ -226,9 +226,11 @@ button { cursor: pointer; }
 /* Wrong / mock / stats */
 .toolbar { display: flex; gap: 9px; flex-wrap: wrap; margin-bottom: 20px; }
 .select-like, .input-like { min-height: 44px; border: 1px solid var(--line); background: var(--paper-card); padding: 10px 12px; color: var(--ink); font-size: 11px; border-radius: var(--radius-sm); }
-.wrong-row { display: grid; grid-template-columns: 48px minmax(0, 1fr) 100px 100px; gap: 15px; align-items: center; padding: 17px 20px; border-bottom: 1px solid var(--line); }
+.wrong-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) 70px 150px; gap: 15px; align-items: center; padding: 17px 20px; border-bottom: 1px solid var(--line); }
 .wrong-row:last-child { border-bottom: 0; }
 .wrong-row .number { color: var(--orange); font: 11px var(--mono); }
+.wrong-row .number span, .wrong-row .number strong { display: block; font: inherit; line-height: 1.7; overflow-wrap: anywhere; }
+.wrong-row .question-source { overflow: hidden; text-overflow: ellipsis; }
 .wrong-row .stem-mini { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wrong-row small { color: #819096; font-size: 10px; }
 .empty-state { text-align: center; padding: 60px 20px; color: #839096; }
@@ -343,9 +345,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .date-stamp { text-align: left; margin-top: 19px; }
   .grid.dashboard-grid, .question-layout, .mock-grid, .stats-grid, .topic-grid { grid-template-columns: 1fr; }
   .daily-card { grid-row: auto; }
-  .wrong-row { grid-template-columns: 42px minmax(0, 1fr) auto; gap: 7px 12px; align-items: center; }
+  .wrong-row { grid-template-columns: 76px minmax(0, 1fr); gap: 7px 12px; align-items: center; }
   .wrong-row small { display: block; grid-column: 2; }
-  .wrong-row .pill { display: inline-flex; grid-column: 3; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
+  .wrong-row .pill { display: inline-flex; grid-column: 2; justify-self: start; white-space: normal; }
   .question-card { min-height: 0; padding: 25px 16px 16px; }
   .question-stem { margin-top: 21px; font-size: clamp(22px, 6vw, 28px); line-height: 1.42; }
   .option { padding: 14px 12px; }
