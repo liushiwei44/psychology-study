@@ -145,6 +145,31 @@ test('wrong answers from every specialty join the front of daily practice at 24 
   assert.deepEqual(JSON.parse(restored.memory.get(STORAGE_KEY)), saved);
 });
 
+test('all shared review entries rotate specialty mistakes past old singles without rewriting an open round or progress', async () => {
+  const now = Date.parse('2026-11-09T02:00:00Z');
+  const saved = base();
+  const singles = questions.filter((q) => q.type === 'single').slice(0, 20);
+  for (const q of singles) saved.attempts[queues.questionId(q)] = { attempts: 3, correct: 0, wrong: 3, lastCorrect: false, confidence: 'high', status: 'new', dueAt: date(1), history: [history[0]], notes: '历史笔记' };
+  const initial = await loadApp(saved, null, { nowMs: now - 86400000 });
+  for (const type of ['multiple', 'judgment', 'case_single', 'case_multiple']) {
+    initial.run(`startSession('specialty', '', { type: '${type}' }); state.selected = new Set(['Z']); recordAnswer();`);
+  }
+  const progress = JSON.parse(initial.memory.get(STORAGE_KEY));
+  const active = { savedAt: now - 1000, session: { mode: 'daily', startedAt: now - 1000, answers: {}, reviewIds: singles.slice(0, 10).map(queues.questionId) }, queue: singles.slice(0, 10).map(queues.questionId), queueIndex: 4, selected: ['A'], confidence: 'low', submitted: false, timerSeconds: 0 };
+  const app = await loadApp(progress, active, { nowMs: now });
+  assert.deepEqual(Array.from(app.run('state.queue')), active.queue);
+  assert.equal(app.run('state.queueIndex'), 4);
+  assert.equal(app.run('[...state.selected].join()'), 'A');
+  for (const mode of ['daily', 'wrong', 'wrong-book']) {
+    app.run(`startSession('${mode}');`);
+    assert.equal(app.run('state.queue.length'), mode === 'daily' ? 50 : 10);
+    assert.equal(app.run('state.session.reviewIds.length'), 10);
+    assert.deepEqual(Array.from(app.run('state.queue.slice(0, 5).map((id) => state.questions.find((q) => questionId(q) === id).type)')).sort(), ['single', 'multiple', 'judgment', 'case_single', 'case_multiple'].sort());
+  }
+  assert.deepEqual(JSON.parse(app.memory.get(STORAGE_KEY)), progress);
+  for (const [id, attempt] of Object.entries(saved.attempts)) assert.deepEqual(progress.attempts[id], attempt);
+});
+
 test('same source number in single and multiple remains two records; references show type and original number', async () => {
   const single = questions.find((q) => q.type === 'single' && q.source_question_no === 1);
   const multiple = questions.find((q) => q.type === 'multiple' && q.source_question_no === 1);

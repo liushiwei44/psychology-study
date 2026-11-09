@@ -1,4 +1,4 @@
-import { questionId, isUsable } from './study-queues.mjs?v=20261103a';
+import { questionId, isUsable } from './study-queues.mjs?v=20261109a';
 
 export const CASE_SOURCE = '自编案例训练（非官方真题）';
 export const PRACTICE_TYPES = ['single', 'multiple', 'case_single', 'case_multiple', 'judgment'];

@@ -63,6 +63,56 @@ test('daily review limit is shared across all five types, and review IDs are a c
   assert.deepEqual(attempts, before);
 });
 
+test('a large single-choice backlog cannot crowd due specialty mistakes out of a review round', () => {
+  const singles = Array.from({ length: 20 }, (_, n) => make(n + 1));
+  const specialties = ['multiple', 'judgment', 'case_single', 'case_multiple'].map((type, n) => make(100 + n, { type }));
+  const fresh = Array.from({ length: 50 }, (_, n) => make(200 + n));
+  const questions = [...singles, ...specialties, ...fresh];
+  const index = buildQuestionIndex(questions);
+  const attempts = Object.fromEntries([...singles, ...specialties].map((q) => [questionId(q), { ...wrong, wrong: q.type === 'single' ? 3 : 1 }]));
+  const before = structuredClone(attempts);
+  const getAttempt = (q) => attempts[questionId(q)] || {};
+  const due = selectDueQuestions(questions, getAttempt, NOW);
+  for (const reviewOnly of [false, true]) {
+    const queue = buildPracticeQueue({ index, getAttempt, due, reviewOnly });
+    assert.deepEqual(queue.slice(0, 5), [singles[0], ...specialties].map(questionId));
+    assert.deepEqual(queue.slice(5, 10), singles.slice(1, 6).map(questionId));
+    assert.equal(queue.length, reviewOnly ? 10 : 50);
+    if (!reviewOnly) assert.ok(queue.slice(10).every((id) => !attempts[id]));
+  }
+  assert.deepEqual(attempts, before);
+});
+
+test('type rotation filters today and duplicate groups before assigning slots, then keeps within-type priority', () => {
+  const singles = Array.from({ length: 20 }, (_, n) => make(n + 1));
+  const multiples = Array.from({ length: 13 }, (_, n) => make(100 + n, { type: 'multiple' }));
+  const duplicate = make(999, { type: 'multiple', stem: multiples[0].stem });
+  const questions = [...singles, ...multiples, duplicate];
+  const index = buildQuestionIndex(questions);
+  const attempts = Object.fromEntries(questions.map((q) => [questionId(q), { ...wrong, wrong: q.type === 'single' ? 3 : 1 }]));
+  attempts[questionId(singles[2])].wrong = 5;
+  attempts[questionId(singles[4])].dueAt = '2026-09-01T00:00:00Z';
+  const getAttempt = (q) => attempts[questionId(q)] || {};
+  const todayIds = [duplicate, ...multiples.slice(1, 12)].map(questionId);
+  const queue = buildPracticeQueue({ index, getAttempt, due: selectDueQuestions(questions, getAttempt, NOW), todayIds, reviewOnly: true });
+  assert.deepEqual(queue.slice(0, 3), [singles[2], multiples[12], singles[4]].map(questionId));
+  assert.equal(queue.length, 10);
+  assert.ok(queue.every((id) => !todayIds.includes(id)));
+  assert.ok(!queue.includes(questionId(multiples[0])));
+});
+
+test('type rotation retains wrong-before-guessed-before-uncertain priority', () => {
+  for (const count of [1, 8, 12]) {
+    const mistakes = Array.from({ length: count }, (_, n) => make(n + 1));
+    const guesses = Array.from({ length: 5 }, (_, n) => make(100 + n, { type: 'multiple' }));
+    const uncertain = make(200, { type: 'judgment' });
+    const questions = [...mistakes, ...guesses, uncertain];
+    const getAttempt = (q) => q.type === 'single' ? wrong : { ...wrong, wrong: 0, lastCorrect: true, confidence: q.type === 'multiple' ? 'low' : 'medium', reviewPending: true };
+    const queue = buildPracticeQueue({ index: buildQuestionIndex(questions), getAttempt, due: selectDueQuestions(questions, getAttempt, NOW), reviewOnly: true });
+    assert.deepEqual(queue, questions.slice(0, 10).map(questionId));
+  }
+});
+
 test('wrong then guessed then uncertain; confident corrected items pause without mutation', () => {
   const questions = Array.from({ length: 6 }, (_, i) => make(i));
   const values = [

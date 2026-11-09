@@ -1,8 +1,8 @@
 import { createCloudSync } from './supabase-sync.js?v=20261013';
 import { normalizeLegacyReviewState, planReview } from './study-rules.mjs';
-import { buildQuestionIndex, buildPracticeQueue, questionId, isUsable, isDueForReview, selectDueQuestions, selectNewQuestions } from './study-queues.mjs?v=20261103a';
+import { buildQuestionIndex, buildPracticeQueue, questionId, isUsable, isDueForReview, selectDueQuestions, selectNewQuestions } from './study-queues.mjs?v=20261109a';
 import { STORAGE_KEY, SESSION_STORAGE_KEY, BACKUP_KEY, FEATURE_BACKUP_KEY, loadSavedProgress, exportSnapshot } from './progress-storage.mjs?v=20261103a';
-import { PRACTICE_TYPES, flattenCases, selectSpecialtyQuestions, buildExamPaper, gradeExam } from './exam-engine.mjs?v=20261103a';
+import { PRACTICE_TYPES, flattenCases, selectSpecialtyQuestions, buildExamPaper, gradeExam } from './exam-engine.mjs?v=20261109a';
 const DAILY_DEFAULT = 50;
 const EXAM_DATE = new Date('2026-12-05T00:00:00');
 
@@ -417,7 +417,7 @@ function renderDashboard() {
       <article class="panel daily-card">
         <div><p class="kicker">Daily dispatch</p><h2>今日计划<br /><em>${todayDone} / ${target}</em> 已完成</h2></div>
         <div class="daily-meta"><div class="progress-ring" style="--progress:${dailyProgress}%"><span>${dailyProgress}%</span></div><p><strong>${due} 道</strong>到期复习<br />为待复习总量，每轮最多 10 道。</p></div>
-        <div><button class="btn btn-primary" data-action="start-daily">${todayDone >= target ? '再来一轮' : '开始今日刷题'} →</button><p class="stat-detail">每轮 ${target} 题，开头合计最多 10 道到期复习，汇总所有专项题型，其余做新题。每天可连续多轮。</p><p class="stat-detail">到期分布：${reviewTypeSummary(dueList)}</p></div>
+        <div><button class="btn btn-primary" data-action="start-daily">${todayDone >= target ? '再来一轮' : '开始今日刷题'} →</button><p class="stat-detail">每轮 ${target} 题，开头合计最多 10 道到期复习；同一复习优先级内按题型轮换，其余做新题。每天可连续多轮。</p><p class="stat-detail">到期分布：${reviewTypeSummary(dueList)}</p></div>
       </article>
       <article class="panel card-pad stat-card"><span class="label">首刷覆盖 / core bank</span><div class="stat-number">${attempts.toLocaleString()}<small> / ${core.length.toLocaleString()}</small></div><div><p class="stat-detail">已覆盖 ${progress}% 原题 · 历史口径保留</p><p class="stat-detail">去重后还需 ${coverage.total - coverage.covered} 道新题</p><div class="accent-line"></div></div></article>
       <article class="panel card-pad stat-card"><span class="label">作答准确率 / all attempts</span><div class="stat-number">${accuracy}<small>%</small></div><div><p class="stat-detail">基于 ${totalAttempts.toLocaleString()} 次作答</p><p class="stat-detail">全部题型累计已做 ${Object.values(state.progress.attempts).filter((a) => a.attempts > 0).length.toLocaleString()} 题 · 含案例与判断</p><div class="accent-line" style="background:var(--sage)"></div></div></article>
@@ -468,9 +468,9 @@ function renderPracticeLauncher() {
     <div class="section-heading"><h3>继续综合首刷与复习</h3></div>
     <div class="grid mock-grid">
       <article class="panel mock-card"><span class="mock-badge">FIRST PASS / 首刷</span><h3>今日新题</h3><p>每轮最多 10 道到期复习，其余安排去重后的新题。达到今日目标仍可继续开下一轮。</p><div class="mock-meta"><div><strong>${target}</strong><span>今日目标</span></div><div><strong>${selectNewQuestions(state.questionIndex, getAttempt).length.toLocaleString()}</strong><span>去重后尚未首刷</span></div></div><button class="btn btn-primary" data-action="start-daily">开始首刷 →</button></article>
-      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>汇总单选、多选、判断和案例专项的到期题，合计每轮最多10道。优先错题，其次蒙题、模糊题；有把握答对暂缓复习。</p><p class="stat-detail">${reviewTypeSummary(dueList)}</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>≤ 10</strong><span>每轮复习上限</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
+      <article class="panel mock-card"><span class="mock-badge">RETURN / 回看</span><h3>到期复习</h3><p>汇总所有专项的到期题，合计每轮最多10道。先错题、再蒙题、再模糊题；同一优先级内按题型轮流取题，不足由其他题型补足。</p><p class="stat-detail">${reviewTypeSummary(dueList)}</p><div class="mock-meta"><div><strong>${due}</strong><span>当前到期</span></div><div><strong>≤ 10</strong><span>每轮复习上限</span></div></div><button class="btn btn-ghost" data-action="start-wrong">进入复习 →</button></article>
     </div>
-    <div class="tip-box" style="margin-top:18px"><strong>统一复习规则</strong>各专项错题答错后24小时到期；蒙对3天后、模糊答对7天后复查。到期后进入新开一轮的前面，所有题型合计最多10道；已开始的一轮保持原顺序。判断题可进入日常复习，不计入两科模拟。</div>
+    <div class="tip-box" style="margin-top:18px"><strong>统一复习规则</strong>各专项错题答错后24小时到期；蒙对3天后、模糊答对7天后复查。到期后进入新开一轮的前面，所有题型合计最多10道；错题内按题型轮换，同题型仍优先多次答错、到期较早的题。已开始的一轮保持原顺序。判断题可进入日常复习，不计入两科模拟。</div>
   `;
 }
 

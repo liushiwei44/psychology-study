@@ -74,9 +74,12 @@ export function isDueForReview(attempt, nowMs = Date.now()) {
     && (!attempt.dueAt || new Date(attempt.dueAt).getTime() <= nowMs);
 }
 
+function reviewRank(attempt) {
+  return isWrongBookAttempt(attempt) ? 0 : attempt.confidence === 'low' ? 1 : 2;
+}
+
 export function reviewPriority(a, b) {
-  const rank = (attempt) => isWrongBookAttempt(attempt) ? 0 : attempt.confidence === 'low' ? 1 : 2;
-  return rank(a) - rank(b)
+  return reviewRank(a) - reviewRank(b)
     || Number(b.wrong || 0) - Number(a.wrong || 0)
     || new Date(a.dueAt || 0).getTime() - new Date(b.dueAt || 0).getTime();
 }
@@ -94,26 +97,42 @@ export function selectNewQuestions(index, getAttempt, excludedIds = []) {
     .map((group) => group[0]);
 }
 
-export function selectReviewRound(due, index, limit = REVIEW_LIMIT, excludedIds = []) {
+export function selectReviewRound(due, index, getAttempt, limit = REVIEW_LIMIT, excludedIds = []) {
   const groupKey = (q) => questionId(index.groupById.get(questionId(q))?.[0] || q);
   const excluded = new Set(excludedIds.map((id) => {
     const group = index.groupById.get(id);
     return group ? questionId(group[0]) : id;
   }));
-  const selected = [];
+  const buckets = [new Map(), new Map(), new Map()];
   for (const q of due) {
     const key = groupKey(q);
     if (excluded.has(key)) continue;
-    if (selected.length >= Math.min(REVIEW_LIMIT, limit)) break;
     excluded.add(key);
-    selected.push(q);
+    const byType = buckets[reviewRank(getAttempt(q))];
+    if (!byType.has(q.type)) byType.set(q.type, []);
+    byType.get(q.type).push(q);
+  }
+  const selected = [];
+  const roundLimit = Math.min(REVIEW_LIMIT, limit);
+  // Rotate types after exclusions so a large old backlog cannot crowd out specialties.
+  for (const byType of buckets) {
+    for (let round = 0; selected.length < roundLimit; round += 1) {
+      let added = false;
+      for (const questions of byType.values()) {
+        if (!questions[round]) continue;
+        selected.push(questions[round]);
+        added = true;
+        if (selected.length >= roundLimit) return selected;
+      }
+      if (!added) break;
+    }
   }
   return selected;
 }
 
 export function buildPracticeQueue({ index, getAttempt, due, todayIds = [], target = 50, reviewOnly = false }) {
   const limit = Math.max(1, Math.floor(Number(target) || 50));
-  const review = selectReviewRound(due, index, limit, todayIds);
+  const review = selectReviewRound(due, index, getAttempt, limit, todayIds);
   const fresh = selectNewQuestions(index, getAttempt, todayIds);
   const questions = reviewOnly && review.length ? review : [...review, ...fresh].slice(0, limit);
   return questions.map(questionId);
